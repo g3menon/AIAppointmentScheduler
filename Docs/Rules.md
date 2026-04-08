@@ -1,156 +1,147 @@
-# Voice Agent Rules & Guardrails
+# AI Appointment Scheduler - Rules & Execution Guardrails
 
-This document defines practical rules for implementing the voice appointment scheduler
-described in `Docs/Architecture.md`.
-
-Rules are grouped as:
-- **General** (apply across some or all phases)
-- **Phase-specific** (`Phase 0` to `Phase 5`)
+This document defines implementation rules for the voice-agent architecture in `Docs/Architecture.md`.
+All contributors and AI agents must follow these rules so each phase is built correctly and in order.
 
 ---
 
-## General Rules (Cross-phase)
+## 1) General Rules (Apply to All Phases)
 
-| # | Rule | Why it matters |
-|---|------|----------------|
-| G1 | **Do not collect or persist PII during calls.** No phone numbers, emails, account numbers, or identity IDs in transcripts, prompts, logs, or MCP payloads. | Core compliance requirement for pre-booking flow. |
-| G2 | **Always enforce disclaimer and refusal policy.** The agent must clearly state informational-only scope and refuse investment advice. | Legal/compliance safety and user clarity. |
-| G3 | **Keep architecture boundaries strict.** Use the sequence `Conversation Orchestration -> NLU/LLM -> Booking Domain Service -> MCP Integration`; ASR/TTS stay at boundaries only. | Prevents business logic leakage and future regressions. |
-| G4 | **Use environment variables for secrets and config.** Never hardcode API keys, OAuth secrets, service account paths, or MCP commands. | Security hygiene and portable deployment. |
-| G5 | **Fail gracefully with user-safe messaging.** If tools fail, return controlled fallback responses and preserve partial state where safe. | Reliability without silent failures. |
-| G6 | **Log for auditability, never for sensitive content.** Log booking code, phase, operation status, and trace IDs; avoid raw sensitive utterances. | Debugging + compliance traceability. |
-| G7 | **Use idempotent external operations.** Calendar/Docs/Gmail requests must support retries without creating duplicates. | Prevents duplicate holds, log rows, and draft spam. |
-| G8 | **Keep responses short and confirmation-driven for voice UX.** Ask one focused question at a time and repeat critical values before commit. | Better recognition, fewer call errors. |
-| G9 | **Timezone must be explicit.** Default to IST unless user overrides; repeat date/time + timezone before final confirmation. | Reduces scheduling ambiguity. |
-| G10 | **Documentation must stay implementation-accurate.** Update `Docs/Architecture.md` and `Docs/README.md` when behavior changes. | Avoids doc drift and onboarding confusion. |
-
----
-
-## Phase 0 - Foundations and Compliance Guardrails
-
-| # | Rule | Details |
-|---|------|---------|
-| P0.1 | **Mandatory opening sequence.** Every new call starts with greeting and disclaimer before transactional actions. | No booking action before compliance framing. |
-| P0.2 | **Use only approved topic taxonomy.** Accept/route only defined categories from architecture. | Ensures consistent downstream handling. |
-| P0.3 | **PII block/redact at ingestion.** If caller provides PII, do not store it; prompt user to use secure link after call. | Keeps call flow compliant by design. |
-| P0.4 | **Define shared session event schema first.** Session/turn events must be standardized before feature expansion. | Enables reliable tracing across phases. |
+| # | Rule | Why this exists |
+|---|------|------------------|
+| G1 | **Respect layer boundaries.** Runtime path must remain `STT -> Orchestration -> NLU/LLM -> Domain -> MCP -> TTS`. | Prevents business logic leakage and fragile coupling. |
+| G2 | **Speech layers are boundary-only.** STT and TTS can transcribe/speak only; they must not trigger domain actions directly. | Keeps core workflow deterministic and testable. |
+| G3 | **No PII collection in-call.** Never request or persist phone/email/account numbers in conversational flow, logs, or payloads. | Compliance and privacy by design. |
+| G4 | **Mandatory safety disclaimer and refusal policy.** Include the "informational, not investment advice" disclaimer and refuse investment-advice requests. | Required compliance behavior. |
+| G5 | **Use structured contracts only.** Cross-layer interfaces must use explicit typed/JSON payloads (`intent_parse`, `session_state`, `booking_command`). | Reduces ambiguity and parsing failures. |
+| G6 | **All external writes go through MCP layer only.** No direct Google API calls from Orchestration, NLU, or Domain. | Guarantees clean integration architecture. |
+| G7 | **Idempotent side effects.** Calendar/Docs/Gmail operations must support safe retries via operation keys. | Prevents duplicate holds/logs/drafts. |
+| G8 | **Approval-gated email behavior.** Gmail integration must create drafts only; never auto-send. | Human-in-the-loop control. |
+| G9 | **Timezone clarity.** Treat booking times in IST by default, and repeat date/time before confirmation. | Avoids booking errors and user confusion. |
+| G10 | **Fail safely and traceably.** Every failure path must return user-safe messaging and produce structured logs keyed by `session_id` and `booking_code` where available. | Reliability and auditability. |
 
 ---
 
-## Phase 1 - Voice I/O and Conversation Orchestration
+## 2) Phase 1 Rules - Conversational Skeleton + Compliance Guardrails
 
-| # | Rule | Details |
-|---|------|---------|
-| P1.1 | **ASR/TTS are adapters, not decision engines.** No booking rules or compliance logic in speech layers. | Maintains clean boundaries. |
-| P1.2 | **State machine driven dialogs only.** Orchestration must follow explicit states (`greet`, `disclaimer`, `capture`, `offer`, `confirm`, `complete`). | Predictable and testable call behavior. |
-| P1.3 | **Require explicit confirmation before commit.** No tentative booking, waitlist creation, or updates until user confirms. | Prevents accidental bookings. |
-| P1.4 | **On low ASR confidence, clarify instead of guessing.** Ask user to repeat critical fields (topic/time). | Reduces wrong-slot bookings. |
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P1.1 | **Implement orchestrator state machine first.** | Stages must include greet, disclaimer, intent/topic, time preference, slot offer, confirmation, completion. |
+| P1.2 | **Gate progress by required slot filling.** | Missing topic or time preference must trigger re-prompts before next stage. |
+| P1.3 | **Support all 5 intents at conversation level.** | Book new, reschedule, cancel, what to prepare, availability windows. |
+| P1.4 | **Add topic whitelist validation.** | Only allow supported topics; unknown topics require clarification or safe fallback. |
+| P1.5 | **No external writes in Phase 1.** | Calendar/Docs/Gmail actions must remain mocked or disabled. |
+| P1.6 | **Mock two-slot offer behavior.** | Slot suggestion should return exactly two options from static/mock source. |
+| P1.7 | **Enforce no-PII prompts.** | Prompt set must explicitly avoid asking contact/account details. |
 
----
-
-## Phase 2 - NLU/LLM Intent + Entity Layer
-
-| # | Rule | Details |
-|---|------|---------|
-| P2.1 | **Support only the 5 defined intents.** `book new`, `reschedule`, `cancel`, `what to prepare`, `check availability windows`. | Avoids uncontrolled action space. |
-| P2.2 | **Return structured output contract.** LLM output must include intent, confidence, entities, and safety flags. | Domain layer should not parse free text. |
-| P2.3 | **Use clarification for ambiguity.** If intent/entity confidence is low, ask targeted follow-up prompts. | Better accuracy than silent assumptions. |
-| P2.4 | **Safety decisions precede business routing.** Investment-advice requests or PII attempts must trigger policy response first. | Compliance before convenience. |
-
----
-
-## Phase 3 - Booking Domain Service
-
-| # | Rule | Details |
-|---|------|---------|
-| P3.1 | **Domain is source of truth for booking state.** Orchestration and MCP layers must not mutate booking lifecycle directly. | Centralized business consistency. |
-| P3.2 | **Generate unique booking code on confirmed action.** Use deterministic format and collision checks. | Reliable user reference and audit key. |
-| P3.3 | **Offer two slots when available.** Follow architecture policy before confirmation. | Standardized booking UX. |
-| P3.4 | **No-slot path must create waitlist state.** If no match exists, move to waitlist workflow rather than dead-end. | Ensures continuity for user intent. |
-| P3.5 | **Secure-link handoff for personal details.** Any contact or account detail collection happens outside call flow. | Keeps call session non-PII. |
+### Definition of Done (Phase 1)
+- End-to-end conversational flow runs for all five intents without external integrations.
+- Disclaimer always appears before booking progression.
+- Date/time is repeated in IST before user confirmation.
+- No code path writes to Calendar, Docs, or Gmail.
 
 ---
 
-## Phase 4 - MCP Integration Layer + FastMCP
+## 3) Phase 2 Rules - Booking Domain Service
 
-| # | Rule | Details |
-|---|------|---------|
-| P4.1 | **All Google interactions go through FastMCP.** No direct Calendar/Docs/Gmail API calls from orchestration or domain code. | Tool boundary and governance. |
-| P4.2 | **Use typed MCP operations only.** `create/update/cancel hold`, `append doc log`, `create/update draft`. | Prevents ad-hoc tool misuse. |
-| P4.3 | **Gmail must remain approval-gated.** Create draft only; never auto-send advisor communications. | Human-in-the-loop safety. |
-| P4.4 | **Persist MCP receipts and trace IDs.** Save event IDs, doc refs, draft IDs, and statuses in booking record. | End-to-end auditability. |
-| P4.5 | **Map errors to retry policy categories.** Classify transient/policy/permanent failures and respond accordingly. | Reliable recovery behavior. |
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P2.1 | **Introduce dedicated Domain Service module.** | Domain rules must not live in orchestrator handlers. |
+| P2.2 | **Generate booking code centrally.** | Use a single generator contract for all booking/reschedule flows. |
+| P2.3 | **Centralize policy validation in domain.** | Domain enforces no-PII, topic validity, and confirmation prerequisites. |
+| P2.4 | **Model booking actions explicitly.** | Domain command `action` must support `hold`, `waitlist`, `reschedule`, `cancel`. |
+| P2.5 | **Implement no-slot waitlist branch.** | If no slots match preference, produce waitlist command and message path. |
+| P2.6 | **Return canonical command payloads.** | Output should include `topic`, `slot`, `booking_code`, and integration-ready fields. |
 
----
-
-## Phase 5 - Reliability, Observability, and Production Readiness
-
-| # | Rule | Details |
-|---|------|---------|
-| P5.1 | **Define and monitor voice-agent SLOs.** Track turn latency and booking completion success rate. | Production quality baseline. |
-| P5.2 | **Instrument cross-layer traces.** Every call must correlate session ID, booking code, and MCP trace IDs. | Fast root-cause analysis. |
-| P5.3 | **Track quality and safety metrics.** Include intent accuracy, fallback rate, refusal rate, tool success/failure, average call duration. | Detect drift and regressions. |
-| P5.4 | **Test critical edge paths routinely.** No slot, low confidence, PII attempt, investment-advice request, MCP tool failure. | Prevents high-risk regressions. |
-| P5.5 | **Provide operational runbooks.** Include retry guidance, partial-failure behavior, and manual recovery steps. | Safer on-call operations. |
+### Definition of Done (Phase 2)
+- Domain Service emits valid commands for hold/waitlist/reschedule/cancel.
+- Booking code generation is deterministic and reused across all relevant intents.
+- Orchestration delegates business decisions to Domain Service, not embedded logic.
+- Waitlist behavior works when no slot is available.
 
 ---
 
-## Quick Rule Index
+## 4) Phase 3 Rules - FastMCP Integration Layer (Google APIs)
 
-| Section | Rule IDs |
-|---|---|
-| General | G1-G10 |
-| Phase 0 | P0.1-P0.4 |
-| Phase 1 | P1.1-P1.4 |
-| Phase 2 | P2.1-P2.4 |
-| Phase 3 | P3.1-P3.5 |
-| Phase 4 | P4.1-P4.5 |
-| Phase 5 | P5.1-P5.5 |
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P3.1 | **Build FastMCP wrappers for 3 tools only.** | `calendar.create_hold`, `docs.append_prebooking_log`, `gmail.create_draft`. |
+| P3.2 | **Standardize input/output schemas per tool.** | Each tool validates request payload and returns stable structured response. |
+| P3.3 | **Calendar title format is mandatory.** | `Advisor Q&A - {Topic} - {Code}` for tentative hold events. |
+| P3.4 | **Docs writes append-only pre-booking rows.** | Store date, topic, slot, code, action type in "Advisor Pre-Bookings". |
+| P3.5 | **Gmail is draft-only and approval-pending.** | Output must include `draft_id` and `approval_status=pending`. |
+| P3.6 | **Add retries + idempotency at integration boundary.** | Prevent duplicates on transient failure. |
+| P3.7 | **Normalize integration errors.** | Return integration-safe error types to Domain Service (no provider-specific leakage to user). |
+
+### Definition of Done (Phase 3)
+- Successful creation of tentative Calendar hold from domain command.
+- Successful append to Docs pre-booking log.
+- Successful Gmail draft creation with pending approval status.
+- Integration failures are retriable, normalized, and non-destructive.
 
 ---
 
-## Definition of Done (Per Phase)
+## 5) Phase 4 Rules - Reliability, Observability, and Recovery
 
-Use this section as an implementation tracking checklist.
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P4.1 | **Structured logging is required.** | All major actions log with `session_id`, `intent`, stage, and `booking_code` if present. |
+| P4.2 | **Classify failures by layer.** | Distinguish STT, parsing, domain validation, and MCP integration errors. |
+| P4.3 | **Implement user-safe fallback prompts.** | On errors, provide concise next steps without exposing internal details. |
+| P4.4 | **Define retry policy per error class.** | Retries only for transient conditions; no infinite loops. |
+| P4.5 | **Handle partial-write scenarios.** | Add compensating workflow when one integration succeeds and another fails. |
+| P4.6 | **Capture execution metrics.** | Track call success rate, fallback frequency, and integration latency. |
 
-### Phase 0 - Foundations and Compliance Guardrails
-- [ ] Greeting + mandatory disclaimer is always delivered before any booking action.
-- [ ] Approved topic taxonomy is implemented and enforced.
-- [ ] PII block/redaction behavior is verified for call ingestion.
-- [ ] Session and turn event schema is finalized and documented.
+### Definition of Done (Phase 4)
+- A single session can be traced across all layers from transcript to integration writes.
+- Known failures return predictable user messaging and structured diagnostics.
+- Partial failures are handled with compensating or recovery behavior.
+- Retry behavior is bounded and verified.
 
-### Phase 1 - Voice I/O and Conversation Orchestration
-- [ ] ASR input and TTS output are integrated as boundary adapters.
-- [ ] Conversation state machine (`greet -> disclaimer -> capture -> offer -> confirm -> complete`) is implemented.
-- [ ] Explicit confirmation gate exists before creating/updating/canceling booking actions.
-- [ ] Low-confidence ASR paths trigger clarification prompts.
+---
 
-### Phase 2 - NLU/LLM Intent + Entity Layer
-- [ ] All 5 intents are correctly recognized and routed.
-- [ ] Structured output contract (`intent`, `confidence`, `entities`, `safety_flags`) is enforced.
-- [ ] Ambiguous intent/entity cases trigger clarification (not silent assumptions).
-- [ ] Safety policy routing (investment-advice refusal, PII handling) is active and tested.
+## 6) Phase 5 Rules - Voice UX Tuning + Demo Readiness
 
-### Phase 3 - Booking Domain Service
-- [ ] Booking lifecycle states are implemented and validated.
-- [ ] Unique booking code generation with collision handling is in place.
-- [ ] Two-slot offer policy works for eligible booking requests.
-- [ ] No-slot path creates waitlist state and continues guided flow.
-- [ ] Secure-link handoff is used for personal details collection outside the call.
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P5.1 | **Keep prompts short and confirmation-focused.** | Avoid verbose assistant turns; preserve clarity. |
+| P5.2 | **Maintain confirmation cadence.** | Reconfirm topic and IST slot at critical transitions. |
+| P5.3 | **Provide secure-link next step consistently.** | End-state response includes booking code + secure details link guidance. |
+| P5.4 | **Prepare script artifact from live prompts.** | Keep a source-of-truth script file for demo/review. |
+| P5.5 | **Verify required demo artifacts.** | Call recording/live demo, calendar hold evidence, docs entry evidence, gmail draft evidence, README updates. |
 
-### Phase 4 - MCP Integration Layer + FastMCP
-- [ ] Calendar, Docs, and Gmail operations are invoked only via FastMCP.
-- [ ] Typed MCP operations are implemented for create/update/cancel + append + draft.
-- [ ] Gmail remains draft-only with explicit approval gate (no auto-send).
-- [ ] MCP receipts (`event_id`, `doc_ref`, `draft_id`, trace IDs) persist in booking records.
-- [ ] Error mapping and retry behavior are implemented for transient/policy/permanent classes.
+### Definition of Done (Phase 5)
+- Voice interaction is concise, clear, and compliant in live/demo execution.
+- All required submission artifacts are generated and reproducible.
+- README and supporting docs match actual implemented behavior.
 
-### Phase 5 - Reliability, Observability, and Production Readiness
-- [ ] SLOs are defined for turn latency and booking completion success.
-- [ ] Cross-layer tracing links session IDs, booking codes, and MCP trace IDs.
-- [ ] Metrics dashboard/logs track quality and safety indicators.
-- [ ] Edge-case test scenarios are executed and passing.
-- [ ] Runbooks exist for retries, partial failures, and manual recovery.
+---
+
+## 7) Execution Gating Rules (How Phases Must Be Coded)
+
+| # | Rule | Enforcement |
+|---|------|-------------|
+| E1 | **Do not skip phase prerequisites.** | A phase cannot be marked complete unless its Definition of Done is fully met. |
+| E2 | **No backward leakage.** | Later-phase logic (e.g., direct Google writes) must not be introduced in earlier phases. |
+| E3 | **Test minimums per phase are mandatory.** | Each phase must add/update tests for its own rules and success/failure paths. |
+| E4 | **Interfaces freeze before integration.** | Contracts between Orchestration, NLU, Domain, and MCP must be finalized before external API hookup. |
+| E5 | **Docs and rules must co-evolve.** | If architecture or behavior changes, update `Docs/Architecture.md` and `Docs/Rules.md` in the same change set. |
+
+---
+
+## 8) Phase Completion Checklist
+
+Before marking any phase complete, confirm:
+- [ ] All phase rules are implemented.
+- [ ] All Definition of Done bullets are verified.
+- [ ] New and changed tests pass for phase-specific behavior.
+- [ ] No violation of general rules (PII, disclaimer, boundaries, draft-only email).
+- [ ] Logs and error handling are present for new flows.
 
 ---
 
