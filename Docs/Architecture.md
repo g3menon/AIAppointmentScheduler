@@ -222,3 +222,312 @@ FastMCP tools are thin wrappers with strong validation and stable responses.
 - `src/integrations/mcp/` - FastMCP clients/tool contracts
 - `src/voice/` - STT/TTS adapters (boundary only)
 - `Docs/` - architecture, rules, scripts, delivery notes
+
+## 9) Low-Level, Phase-wise Implementation Plan
+
+This section defines concrete implementation details and test coverage expected in each phase.
+
+### Phase 1 - Conversational Skeleton + Compliance Guardrails
+
+#### Implementation Details
+- Create `src/orchestration/state_machine.py`
+  - `ConversationStage` enum:
+    - `GREET`
+    - `DISCLAIMER`
+    - `INTENT_CAPTURE`
+    - `TOPIC_CAPTURE`
+    - `TIME_CAPTURE`
+    - `SLOT_OFFER`
+    - `CONFIRMATION`
+    - `COMPLETION`
+  - `advance(session_state, nlu_result)` function for deterministic stage transitions.
+- Create `src/orchestration/session_store.py`
+  - In-memory session model:
+    - `session_id`
+    - `current_stage`
+    - `intent`
+    - `topic`
+    - `time_preference`
+    - `selected_slot`
+    - `timezone="IST"`
+    - `policy_flags`
+- Create `src/orchestration/prompt_templates.py`
+  - Canonical response templates for:
+    - disclaimer
+    - topic clarification
+    - time capture
+    - two-slot offer
+    - confirmation with IST repeat
+    - secure-link completion message
+- Create `src/orchestration/topic_catalog.py`
+  - Allowed topics:
+    - KYC/Onboarding
+    - SIP/Mandates
+    - Statements/Tax Docs
+    - Withdrawals & Timelines
+    - Account Changes/Nominee
+- Create `src/orchestration/pii_guard.py`
+  - Regex/heuristic checks for phone/email/account-like patterns.
+  - Reject or redact user-provided sensitive values in session transcript.
+- Create `src/orchestration/mock_calendar.py`
+  - Static slot provider returning exactly two slots in IST.
+- Keep external integration stubs only:
+  - `src/integrations/mcp/stub_client.py` returns `NOT_ENABLED_IN_PHASE_1`.
+
+#### Testing Details
+- **Unit tests**
+  - `tests/orchestration/test_state_machine.py`
+    - Valid stage transitions.
+    - Missing-topic and missing-time re-prompt behavior.
+  - `tests/orchestration/test_pii_guard.py`
+    - Phone/email/account strings are blocked/redacted.
+  - `tests/orchestration/test_topic_catalog.py`
+    - Supported topics accepted; unsupported topics rejected.
+- **Integration tests**
+  - `tests/integration/test_phase1_conversation_paths.py`
+    - Simulated transcript for each intent:
+      - book
+      - reschedule
+      - cancel
+      - prepare
+      - availability
+    - Asserts no MCP call is attempted.
+- **Acceptance tests**
+  - Disclaimer appears before booking confirmation path.
+  - IST time is repeated before final user confirmation.
+  - Exactly two slots are offered in happy path.
+
+### Phase 2 - Domain Logic + Booking Code + Slot Decisions
+
+#### Implementation Details
+- Create `src/domain/booking/models.py`
+  - `BookingCommand`:
+    - `action` (`hold|waitlist|reschedule|cancel`)
+    - `topic`
+    - `slot`
+    - `booking_code`
+    - `notes_entry`
+    - `email_draft_payload`
+  - `BookingDecision`:
+    - `status` (`ready|needs_clarification|rejected`)
+    - `reason`
+    - `command` (optional)
+- Create `src/domain/booking/code_generator.py`
+  - Booking code format validator and generator:
+    - Prefix `NL-`
+    - Alphanumeric suffix length policy (for example 4 chars).
+  - Collision check hook (in-memory initially; replaceable later).
+- Create `src/domain/booking/validator.py`
+  - Validate:
+    - topic in whitelist
+    - required fields per action
+    - timezone normalization to IST
+    - no PII in domain command payload
+- Create `src/domain/booking/decision_engine.py`
+  - Functions:
+    - `decide_new_booking(...)`
+    - `decide_reschedule(...)`
+    - `decide_cancel(...)`
+    - `decide_waitlist(...)`
+  - Converts orchestrator inputs into canonical `BookingCommand`.
+- Create `src/domain/booking/slot_selector.py`
+  - Accepts candidate slots and user preference.
+  - Returns best two options or empty list for waitlist branch.
+
+#### Testing Details
+- **Unit tests**
+  - `tests/domain/test_code_generator.py`
+    - Format, uniqueness, and collision retry behavior.
+  - `tests/domain/test_validator.py`
+    - Invalid topic, missing slot, and PII contamination rejection.
+  - `tests/domain/test_decision_engine.py`
+    - `hold`, `waitlist`, `reschedule`, `cancel` command generation.
+- **Integration tests**
+  - `tests/integration/test_orchestration_to_domain.py`
+    - Ensures orchestrator delegates action creation to domain.
+    - Confirms waitlist output when slot selection fails.
+- **Acceptance tests**
+  - Every supported action produces a complete `BookingCommand`.
+  - Domain is the only source of booking-code generation.
+  - No domain output includes restricted PII fields.
+
+### Phase 3 - FastMCP Integration (Calendar, Docs, Gmail Draft)
+
+#### Implementation Details
+- Create `src/integrations/mcp/contracts.py`
+  - Input/output schemas for:
+    - calendar hold request/response
+    - docs append request/response
+    - gmail draft request/response
+- Create `src/integrations/mcp/idempotency.py`
+  - Operation-key generation:
+    - Hash of (`session_id`, `action`, `booking_code`, `slot`).
+  - Cache/replay strategy for duplicate requests.
+- Create `src/integrations/mcp/retry_policy.py`
+  - Retry transient errors with bounded exponential backoff.
+  - No retry for validation/auth hard failures.
+- Create `src/integrations/mcp/client.py`
+  - `create_calendar_hold(command)`
+  - `append_prebooking_log(command)`
+  - `create_approval_gated_draft(command)`
+  - Error normalization:
+    - `IntegrationTransientError`
+    - `IntegrationValidationError`
+    - `IntegrationAuthError`
+- Create `src/integrations/mcp/fastmcp_server/` tool wrappers:
+  - `calendar_tool.py`
+  - `docs_tool.py`
+  - `gmail_tool.py`
+- Enforce Google operation policies:
+  - Calendar title: `Advisor Q&A - {Topic} - {Code}`
+  - Docs append target: `"Advisor Pre-Bookings"`
+  - Gmail action: draft-only, `approval_status=pending`
+
+#### Testing Details
+- **Unit tests**
+  - `tests/integrations/test_contracts.py`
+    - Schema validation for each tool payload.
+  - `tests/integrations/test_idempotency.py`
+    - Duplicate operation returns same logical result.
+  - `tests/integrations/test_retry_policy.py`
+    - Retries only on transient failures.
+- **Integration tests**
+  - `tests/integration/test_domain_to_mcp.py`
+    - Domain command to MCP request mapping verification.
+  - `tests/integration/test_google_wrappers.py`
+    - Mocked Google API calls validate required fields and response mapping.
+- **Acceptance tests**
+  - Successful hold creation flow returns `event_id`.
+  - Docs append returns `document_id` and `appended_range`.
+  - Gmail draft returns `draft_id` and `approval_status=pending`.
+  - No code path sends email directly.
+
+### Phase 4 - Reliability, Observability, and Recovery
+
+#### Implementation Details
+- Create `src/observability/logger.py`
+  - Structured logger with fields:
+    - `timestamp`
+    - `session_id`
+    - `stage`
+    - `intent`
+    - `booking_code`
+    - `error_type`
+    - `latency_ms`
+- Create `src/observability/metrics.py`
+  - Counters:
+    - `calls_total`
+    - `calls_success`
+    - `fallback_prompts_total`
+    - `mcp_failures_total`
+  - Histograms:
+    - `turn_latency_ms`
+    - `integration_latency_ms`
+- Create `src/orchestration/fallback_policy.py`
+  - Error-class to user-message mapping.
+  - Re-prompt limit and graceful termination behavior.
+- Create `src/domain/booking/compensation.py`
+  - Partial-failure handlers:
+    - hold created, docs failed
+    - hold + docs success, gmail failed
+  - Recovery action queue (for deferred retries/manual follow-up).
+- Create `src/observability/audit_trail.py`
+  - Correlate each call with final artifact status:
+    - calendar_status
+    - docs_status
+    - gmail_status
+
+#### Testing Details
+- **Unit tests**
+  - `tests/observability/test_logger_fields.py`
+    - Required log keys present.
+  - `tests/orchestration/test_fallback_policy.py`
+    - Correct user-facing fallback prompts for each error class.
+  - `tests/domain/test_compensation.py`
+    - Partial-write recovery strategy selection.
+- **Integration tests**
+  - `tests/integration/test_failure_scenarios.py`
+    - STT error
+    - NLU parse failure
+    - domain validation failure
+    - MCP timeout/transient failure
+- **Acceptance tests**
+  - Each failed session has complete trace entries by `session_id`.
+  - User receives safe message for every known failure class.
+  - Partial integration failures are recoverable and visible in audit output.
+
+### Phase 5 - Voice UX Tuning + Demo Readiness
+
+#### Implementation Details
+- Create `src/voice/response_style.py`
+  - Response constraints:
+    - concise turn length policy
+    - confirmation-first formatting
+    - no jargon and no policy leakage
+- Create `src/voice/script_builder.py`
+  - Generate and maintain script artifacts in `Docs/`:
+    - opening prompts
+    - clarification prompts
+    - confirmations
+    - refusal responses
+    - completion prompts
+- Create `src/voice/tts_formatter.py`
+  - Improve spoken clarity:
+    - slow spelling for booking code
+    - explicit date-time phrasing in IST
+- Create `Docs/Script.md` (or equivalent) as the canonical demo script.
+- Ensure README documents:
+  - mock slot JSON source
+  - reschedule/cancel behavior
+  - artifact generation and verification steps
+
+#### Testing Details
+- **Unit tests**
+  - `tests/voice/test_response_style.py`
+    - Turn length and compliance phrase requirements.
+  - `tests/voice/test_tts_formatter.py`
+    - Booking-code and IST phrasing format checks.
+- **Integration tests**
+  - `tests/integration/test_end_to_end_voice_flow.py`
+    - Full simulated call from greeting to completion with artifact checks.
+  - `tests/integration/test_prepare_intent_flow.py`
+    - "What to prepare" intent does not trigger booking artifacts unless requested.
+- **Acceptance tests**
+  - Live/demo call is understandable, concise, and policy-compliant.
+  - Required evidence artifacts are generated and reproducible:
+    - calendar hold proof
+    - docs log proof
+    - gmail draft proof
+    - call demo recording or link
+
+## 10) Cross-Phase Test Strategy
+
+### Test Suite Structure
+- `tests/unit/` for deterministic logic:
+  - state machine
+  - validators
+  - formatters
+  - idempotency/retry logic
+- `tests/integration/` for boundary handoffs:
+  - Orchestration <-> NLU
+  - Orchestration <-> Domain
+  - Domain <-> MCP
+- `tests/e2e/` for complete conversational journeys with mocked STT/TTS and sandboxed integrations.
+
+### Quality Gates per Phase
+- Unit tests for new modules must pass before moving phases.
+- Integration tests for touched boundaries are mandatory.
+- No phase is complete unless its acceptance tests pass.
+- Regression suite must include:
+  - one happy-path booking
+  - one no-slot waitlist
+  - one reschedule
+  - one cancel
+  - one policy refusal (investment advice)
+
+### Recommended CI Sequence
+1. Lint + static checks
+2. Unit tests
+3. Integration tests
+4. E2E smoke tests (mock integrations for PR; real sandbox optional for nightly)
+5. Artifact contract validation (Calendar/Docs/Gmail response schema checks)
