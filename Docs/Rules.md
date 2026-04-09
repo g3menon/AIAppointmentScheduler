@@ -115,22 +115,91 @@ This document enforces how phases must be implemented against `Docs/Architecture
 
 ---
 
-## 7) Cross-Phase Test Strategy
+## 7) Phase 6 Rules - Secondary Intent Subgraphs (Chat-First Completion)
 
-### 7.1 Test Suite Structure
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P6.1 | Implement full reschedule graph. | Collect booking code, validate, offer two alternatives, update hold. |
+| P6.2 | Implement full cancel graph. | Collect code, confirm, cancel hold, append cancellation note, optional draft update. |
+| P6.3 | Implement deterministic prepare guidance. | `what_to_prepare` responses come from approved static templates, not free-form invention. |
+| P6.4 | Implement availability peek safely. | Availability checks do not create booking artifacts unless user confirms booking path. |
+| P6.5 | Preserve no-PII invariants in all subgraphs. | Reschedule/cancel must never request/store personal identifiers; booking code is the only lookup token. |
+
+### Definition of Done (Phase 6)
+- All secondary intent subgraphs are chat-tested end-to-end.
+- Booking-code-only identity flow works for reschedule/cancel.
+- No subgraph introduces PII capture or persistence.
+
+---
+
+## 8) Phase 7 Rules - Voice Adapters (Input/Output Swap Only)
+
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P7.1 | Voice adds adapters only. | STT/TTS are wired to the same `Orchestrator.handle(...)` contract used by chat. |
+| P7.2 | No business/state rewrite for voice. | Existing intent/state/domain/MCP behavior remains unchanged. |
+| P7.3 | Barge-in must not bypass compliance. | Interrupted playback cannot skip disclaimer, refusal, or no-PII policy checks. |
+| P7.4 | Enforce transcript hygiene. | STT partial/final text follows the same redaction + PII blocking path as chat text. |
+| P7.5 | Keep chat as regression baseline. | Chat test suite remains mandatory and green after voice integration. |
+
+### Definition of Done (Phase 7)
+- One end-to-end voice scenario works through the shared runtime.
+- Voice path passes the same policy gates as chat.
+- No raw audio/transcript persistence is enabled by default in production mode.
+
+---
+
+## 9) Phase 8 Rules - Hardening, Ops, and Degraded Modes
+
+### Rules
+| # | Rule | Implementation expectation |
+|---|------|----------------------------|
+| P8.1 | Enforce production redaction policy. | Log/event pipelines redact sensitive text before write/export. |
+| P8.2 | Add runtime abuse controls. | Session creation limits, TTL cleanup, and bounded retries are active. |
+| P8.3 | Define MCP outage behavior. | User-safe degraded mode messaging and runbook steps are documented and tested. |
+| P8.4 | Add failure-injection coverage. | Timeout/transient failure tests validate retry + fallback + compensation behavior. |
+| P8.5 | Verify no-PII in observability/export. | Metrics, traces, and audit outputs contain metadata only and no raw user text. |
+
+### Definition of Done (Phase 8)
+- Failure injection tests pass for MCP outages/timeouts.
+- Degraded mode behavior is documented and operator-ready.
+- Production observability path is PII-safe by policy and test.
+
+---
+
+## 10) PII Rules by Phase (Mandatory)
+
+| Phase | PII requirement |
+|---|---|
+| Phase 1 | `PiiGuard` blocks obvious identifiers at input; prompts never ask for PII. |
+| Phase 2 | Domain validators reject commands carrying disallowed PII-like fields. |
+| Phase 3 | MCP payload validator blocks PII in Calendar/Docs/Gmail payloads before send. |
+| Phase 4 | Logging/audit redaction is enforced before persistence/export. |
+| Phase 5 | Voice formatting and scripts avoid eliciting or repeating PII. |
+| Phase 6 | Reschedule/cancel use booking code only; no alternate identity capture. |
+| Phase 7 | STT partial/final transcripts pass through the same PII gate as chat text. |
+| Phase 8 | CI/runtime audits verify no PII in logs, traces, artifacts, and test fixtures. |
+
+---
+
+## 11) Cross-Phase Test Strategy
+
+### 11.1 Test Suite Structure
 - **Unit tests:** deterministic modules (state machine, validators, code generator, retry/idempotency, formatters).
 - **Integration tests:** boundary handoffs (chat->orchestration, orchestration->domain, domain->MCP, voice adapters->chat runtime).
 - **E2E tests:**
   - Phases 1-4: chat-only journeys.
   - Phase 5 onward: include voice journeys and parity checks.
 
-### 7.2 Quality Gates for Phase Completion
+### 11.2 Quality Gates for Phase Completion
 - New/changed unit tests pass.
 - Touched integration boundaries are tested and pass.
 - Phase Definition of Done checklist is fully met.
 - Compliance checks pass (PII, disclaimer, Gmail draft-only).
 
-### 7.3 Regression Scenarios (Must Stay Green)
+### 11.3 Regression Scenarios (Must Stay Green)
 - happy-path booking
 - no-slot waitlist
 - reschedule
@@ -140,7 +209,7 @@ This document enforces how phases must be implemented against `Docs/Architecture
 - MCP transient failure and retry/idempotency behavior
 - chat-vs-voice parity (Phase 5 onward)
 
-### 7.4 Recommended CI Sequence
+### 11.4 Recommended CI Sequence
 1. Lint + static checks
 2. Unit tests
 3. Integration tests
@@ -149,19 +218,19 @@ This document enforces how phases must be implemented against `Docs/Architecture
 
 ---
 
-## 8) Execution Gating Rules
+## 12) Execution Gating Rules
 
 | # | Rule | Enforcement |
 |---|------|-------------|
 | E1 | No phase skipping. | A phase cannot be marked complete unless all DoD checks pass. |
-| E2 | No premature voice work. | Voice adapters cannot start before Phase 1-4 quality gates are green. |
+| E2 | No premature voice work. | Voice adapters cannot start before Phase 1-6 quality gates are green. |
 | E3 | No backward leakage. | Later-phase logic must not appear in earlier phases. |
 | E4 | Interface freeze before integrations. | Contracts across orchestration/domain/MCP must be stable before production wiring. |
 | E5 | Docs and implementation must stay aligned. | Architecture/rules updates are required when behavior changes. |
 
 ---
 
-## 9) Phase Completion Checklist
+## 13) Phase Completion Checklist
 
 Before closing any phase:
 - [ ] Phase-specific rules are implemented.
@@ -172,4 +241,4 @@ Before closing any phase:
 
 ---
 
-*Last updated: 2026-04-08*
+*Last updated: 2026-04-09*

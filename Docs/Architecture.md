@@ -315,120 +315,726 @@ Maintain a stable regression suite with:
 - `src/voice/` - STT/TTS adapters (introduced in Phase 5)
 - `tests/` - unit/integration/e2e suites
 - `Docs/` - architecture, rules, scripts, and delivery notes
+# AI Appointment Scheduler - Phase-wise Architecture
 
-## 8) Low-Level Architecture Gap Closure (Chat-First Canonical)
+## 1) System Goal
+Build a compliant, pre-booking voice agent for advisor appointments that:
+- Handles 5 intents: new booking, reschedule, cancel, preparation guidance, availability checks.
+- Enforces disclaimer and safety policy ("informational, not investment advice").
+- Avoids collecting PII during the call.
+- Creates operational artifacts through MCP:
+  - Calendar tentative hold (Google Calendar)
+  - Pre-booking log entry (Google Docs)
+  - Approval-gated advisor email draft (Gmail)
 
-This section captures key low-level implementation elements that were not explicit in earlier sections and should be treated as canonical for build sequencing.
+## 2) High-Level Layered Architecture
+The runtime path is linear, while speech layers stay at the boundaries and do not interrupt business logic in the middle:
 
-### 8.1 Chat-First Execution Rule
-- Ship full text/chat behavior before any audio path.
-- Core API contract:
-  - `Orchestrator.handle(user_text: str, session: SessionContext) -> AgentTurn`
-  - `AgentTurn.messages: list[str]` is the canonical assistant output for both chat UI and later TTS.
-- Voice is adapter-only:
-  - `SpeechToText -> user_text`
-  - `for message in AgentTurn.messages: TextToSpeech.synthesize(message)`
-  - No changes to orchestration, NLU, domain, or MCP for voice enablement.
+`Speech-to-Text (ingress)`  
+-> `Conversation Orchestration`  
+-> `NLU/LLM Layer`  
+-> `Booking Domain Service`  
+-> `MCP Integration Layer (FastMCP + Google APIs)`  
+-> `Text-to-Speech (egress)`
 
-### 8.2 Cross-Cutting Conventions (Canonical)
+### Layer Responsibilities
+1. **Speech-to-Text (STT) Layer (Start Boundary)**
+   - Converts caller audio to text utterances.
+   - Provides confidence scores and partial/final transcript markers.
+   - No business decision-making here; this layer only transcribes.
+
+2. **Conversation Orchestration Layer**
+   - Owns turn management, state machine, and flow progression.
+   - Enforces required sequence:
+     - Greeting
+     - Disclaimer
+     - Intent + topic capture
+     - Time preference capture (with timezone = IST)
+     - Slot offer (two options)
+     - Confirmation
+     - Next steps and secure link
+   - Handles fallback, re-prompts, interruptions, and confirmation loops.
+   - Delegates interpretation to NLU/LLM and business actions to Domain Service.
+
+3. **NLU/LLM Layer**
+   - Classifies intent and extracts entities:
+     - `intent`: book/reschedule/cancel/prepare/availability
+     - `topic`: allowed categories only
+     - `time_preference`: day/time window in IST
+   - Produces structured output (JSON contract) for orchestration/domain.
+   - Applies policy-safe responses:
+     - Refuse investment advice
+     - Offer educational alternatives when required
+   - Does not directly call Google APIs.
+
+4. **Booking Domain Service**
+   - Core business logic and policy enforcement.
+   - Validates constraints:
+     - No PII fields accepted or persisted
+     - Topic must be from supported list
+     - Date/time repeated back at confirmation
+   - Generates booking code (example: `NL-A742`).
+   - Decides booking outcome:
+     - Tentative hold flow
+     - Waitlist flow when no slot matches
+   - Prepares canonical command payloads for MCP layer.
+
+5. **MCP Integration Layer (FastMCP Server)**
+   - Adapter layer exposing tools backed by Google APIs:
+     - `calendar.create_hold(...)`
+     - `docs.append_prebooking_log(...)`
+     - `gmail.create_draft(...)` (approval-gated)
+   - Handles auth, retries, idempotency keys, and error normalization.
+   - Returns deterministic operation results to Domain Service.
+
+6. **Text-to-Speech (TTS) Layer (End Boundary)**
+   - Converts final response text to voice output.
+   - Keeps responses concise and confirmation-centric for call clarity.
+   - No orchestration or business logic here.
+
+## 3) Data Contracts (Core Objects)
+Use strict structured payloads between layers.
+
+### 3.1 Intent Parse Output (NLU -> Orchestrator/Domain)
+- `intent`
+- `topic`
+- `time_preference`
+- `confidence`
+- `policy_flags` (e.g., investment_advice_request = true)
+
+### 3.2 Session State (Orchestration)
+- `session_id`
+- `current_stage` (greet/disclaimer/topic/time/offer/confirm/complete)
+- `timezone` (default IST)
+- `selected_slot` (optional)
+- `booking_code` (optional)
+- `transcript_log` (sanitized, no PII)
+
+### 3.3 Booking Command (Domain -> MCP)
+- `action`: hold | waitlist | reschedule | cancel
+- `topic`
+- `slot`
+- `booking_code`
+- `notes_entry`
+- `email_draft_payload`
+
+## 4) FastMCP Server Design (Google API Wrappers)
+FastMCP tools are thin wrappers with strong validation and stable responses.
+
+### 4.1 Calendar Tool
+- **Purpose:** Create tentative hold.
+- **Title format:** `Advisor Q&A - {Topic} - {Code}`
+- **Input:** topic, slot(IST), booking_code, mode(tentative/waitlist)
+- **Output:** event_id, calendar_link, status
+
+### 4.2 Docs Tool
+- **Purpose:** Append pre-booking log row in "Advisor Pre-Bookings".
+- **Input:** date, topic, slot, code, action_type
+- **Output:** document_id, appended_range, status
+
+### 4.3 Gmail Tool (Approval-Gated)
+- **Purpose:** Create draft only; never auto-send.
+- **Input:** advisor recipient, subject, body template, metadata
+- **Output:** draft_id, preview, approval_status=`pending`
+
+## 5) Phase-wise Delivery Plan
+
+## Phase 1 - Conversational Skeleton + Compliance Guardrails
+**Objective:** Get a safe call flow running end-to-end without external writes.
+
+**Scope**
+- Implement orchestrator states and transitions.
+- Add mandatory disclaimer and refusal behavior.
+- Add topic whitelist and no-PII checks.
+- Mock slot offering (two slots from static calendar JSON).
+
+**Exit Criteria**
+- Voice flow supports all 5 intents at conversational level.
+- No booking artifacts written yet.
+- Confirm/repeat date-time in IST before final confirmation.
+
+## Phase 2 - Domain Logic + Booking Code + Slot Decisions
+**Objective:** Introduce deterministic business actions.
+
+**Scope**
+- Add Booking Domain Service with command generation.
+- Implement booking code generator.
+- Implement no-slot handling (waitlist path).
+- Add reschedule/cancel rule handling.
+
+**Exit Criteria**
+- Domain emits valid commands for hold/waitlist/reschedule/cancel.
+- All policy checks are centralized in Domain Service.
+
+## Phase 3 - FastMCP Integration (Calendar, Docs, Gmail Draft)
+**Objective:** Connect real systems through MCP adapters.
+
+**Scope**
+- Build FastMCP server wrappers for Google Calendar, Docs, Gmail.
+- Wire Domain commands to MCP tool calls.
+- Add operation idempotency and retry envelopes.
+- Enforce approval-gated Gmail drafts (draft-only mode).
+
+**Exit Criteria**
+- Successful tentative hold creation in Calendar.
+- Successful append into "Advisor Pre-Bookings" doc.
+- Successful advisor draft creation with `pending approval`.
+
+## Phase 4 - Reliability, Observability, and Recovery
+**Objective:** Production-harden workflows.
+
+**Scope**
+- Structured logging by `session_id` and `booking_code`.
+- Error buckets: STT failure, parsing failure, domain validation, MCP tool failure.
+- User-safe fallback prompts and retry strategy.
+- Compensating actions for partial failures (e.g., hold created but doc append failed).
+
+**Exit Criteria**
+- Traceable flow per call across all layers.
+- Partial failure paths handled with user-safe messaging.
+
+## Phase 5 - Voice UX Tuning + Demo Readiness
+**Objective:** Improve call clarity and prepare deliverables.
+
+**Scope**
+- Shorten prompts and improve confirmation cadence.
+- Add script file with production prompts/utterances.
+- Validate demo artifacts:
+  - call recording/live link
+  - calendar hold screenshot
+  - docs log proof
+  - gmail draft proof
+  - README updates
+
+**Exit Criteria**
+- End-to-end demo runs reliably.
+- All required submission artifacts are reproducible.
+
+## 6) Primary Runtime Sequence (Booking New Appointment)
+1. STT transcribes caller utterance.
+2. Orchestrator greets and enforces disclaimer.
+3. NLU extracts intent/topic/time preference.
+4. Orchestrator asks for missing slots/entities.
+5. Domain validates inputs, selects/offers two slots.
+6. User confirms selected slot.
+7. Domain generates booking code.
+8. MCP layer executes:
+   - Calendar tentative hold
+   - Docs pre-booking append
+   - Gmail draft creation (approval pending)
+9. Orchestrator returns booking code + secure URL instructions.
+10. TTS speaks final concise confirmation.
+
+## 7) Non-Functional Requirements
+- **Compliance:** no PII capture in-call; mandatory disclaimer.
+- **Safety:** refuse investment advice and redirect to educational resources.
+- **Latency:** keep turn responses short and deterministic.
+- **Idempotency:** safe retries on MCP tools via operation keys.
+- **Auditability:** correlated logs by session and booking code.
+
+## 8) Suggested Repository Mapping
+- `src/orchestration/` - conversation state machine and handlers
+- `src/nlu/` - intent/entity extraction and response policy prompts
+- `src/domain/booking/` - business rules, booking code, decisioning
+- `src/integrations/mcp/` - FastMCP clients/tool contracts
+- `src/voice/` - STT/TTS adapters (boundary only)
+- `Docs/` - architecture, rules, scripts, delivery notes
+
+## 9) Low-Level, Phase-wise Implementation Plan
+
+This section defines concrete implementation details and test coverage expected in each phase.
+
+### Phase 1 - Conversational Skeleton + Compliance Guardrails
+
+#### Implementation Details
+- Create `src/orchestration/state_machine.py`
+  - `ConversationStage` enum:
+    - `GREET`
+    - `DISCLAIMER`
+    - `INTENT_CAPTURE`
+    - `TOPIC_CAPTURE`
+    - `TIME_CAPTURE`
+    - `SLOT_OFFER`
+    - `CONFIRMATION`
+    - `COMPLETION`
+  - `advance(session_state, nlu_result)` function for deterministic stage transitions.
+- Create `src/orchestration/session_store.py`
+  - In-memory session model:
+    - `session_id`
+    - `current_stage`
+    - `intent`
+    - `topic`
+    - `time_preference`
+    - `selected_slot`
+    - `timezone="IST"`
+    - `policy_flags`
+- Create `src/orchestration/prompt_templates.py`
+  - Canonical response templates for:
+    - disclaimer
+    - topic clarification
+    - time capture
+    - two-slot offer
+    - confirmation with IST repeat
+    - secure-link completion message
+- Create `src/orchestration/topic_catalog.py`
+  - Allowed topics:
+    - KYC/Onboarding
+    - SIP/Mandates
+    - Statements/Tax Docs
+    - Withdrawals & Timelines
+    - Account Changes/Nominee
+- Create `src/orchestration/pii_guard.py`
+  - Regex/heuristic checks for phone/email/account-like patterns.
+  - Reject or redact user-provided sensitive values in session transcript.
+- Create `src/orchestration/mock_calendar.py`
+  - Static slot provider returning exactly two slots in IST.
+- Keep external integration stubs only:
+  - `src/integrations/mcp/stub_client.py` returns `NOT_ENABLED_IN_PHASE_1`.
+
+#### Testing Details
+- **Unit tests**
+  - `tests/orchestration/test_state_machine.py`
+    - Valid stage transitions.
+    - Missing-topic and missing-time re-prompt behavior.
+  - `tests/orchestration/test_pii_guard.py`
+    - Phone/email/account strings are blocked/redacted.
+  - `tests/orchestration/test_topic_catalog.py`
+    - Supported topics accepted; unsupported topics rejected.
+- **Integration tests**
+  - `tests/integration/test_phase1_conversation_paths.py`
+    - Simulated transcript for each intent:
+      - book
+      - reschedule
+      - cancel
+      - prepare
+      - availability
+    - Asserts no MCP call is attempted.
+- **Acceptance tests**
+  - Disclaimer appears before booking confirmation path.
+  - IST time is repeated before final user confirmation.
+  - Exactly two slots are offered in happy path.
+
+### Phase 2 - Domain Logic + Booking Code + Slot Decisions
+
+#### Implementation Details
+- Create `src/domain/booking/models.py`
+  - `BookingCommand`:
+    - `action` (`hold|waitlist|reschedule|cancel`)
+    - `topic`
+    - `slot`
+    - `booking_code`
+    - `notes_entry`
+    - `email_draft_payload`
+  - `BookingDecision`:
+    - `status` (`ready|needs_clarification|rejected`)
+    - `reason`
+    - `command` (optional)
+- Create `src/domain/booking/code_generator.py`
+  - Booking code format validator and generator:
+    - Prefix `NL-`
+    - Alphanumeric suffix length policy (for example 4 chars).
+  - Collision check hook (in-memory initially; replaceable later).
+- Create `src/domain/booking/validator.py`
+  - Validate:
+    - topic in whitelist
+    - required fields per action
+    - timezone normalization to IST
+    - no PII in domain command payload
+- Create `src/domain/booking/decision_engine.py`
+  - Functions:
+    - `decide_new_booking(...)`
+    - `decide_reschedule(...)`
+    - `decide_cancel(...)`
+    - `decide_waitlist(...)`
+  - Converts orchestrator inputs into canonical `BookingCommand`.
+- Create `src/domain/booking/slot_selector.py`
+  - Accepts candidate slots and user preference.
+  - Returns best two options or empty list for waitlist branch.
+
+#### Testing Details
+- **Unit tests**
+  - `tests/domain/test_code_generator.py`
+    - Format, uniqueness, and collision retry behavior.
+  - `tests/domain/test_validator.py`
+    - Invalid topic, missing slot, and PII contamination rejection.
+  - `tests/domain/test_decision_engine.py`
+    - `hold`, `waitlist`, `reschedule`, `cancel` command generation.
+- **Integration tests**
+  - `tests/integration/test_orchestration_to_domain.py`
+    - Ensures orchestrator delegates action creation to domain.
+    - Confirms waitlist output when slot selection fails.
+- **Acceptance tests**
+  - Every supported action produces a complete `BookingCommand`.
+  - Domain is the only source of booking-code generation.
+  - No domain output includes restricted PII fields.
+
+### Phase 3 - FastMCP Integration (Calendar, Docs, Gmail Draft)
+
+#### Implementation Details
+- Create `src/integrations/mcp/contracts.py`
+  - Input/output schemas for:
+    - calendar hold request/response
+    - docs append request/response
+    - gmail draft request/response
+- Create `src/integrations/mcp/idempotency.py`
+  - Operation-key generation:
+    - Hash of (`session_id`, `action`, `booking_code`, `slot`).
+  - Cache/replay strategy for duplicate requests.
+- Create `src/integrations/mcp/retry_policy.py`
+  - Retry transient errors with bounded exponential backoff.
+  - No retry for validation/auth hard failures.
+- Create `src/integrations/mcp/client.py`
+  - `create_calendar_hold(command)`
+  - `append_prebooking_log(command)`
+  - `create_approval_gated_draft(command)`
+  - Error normalization:
+    - `IntegrationTransientError`
+    - `IntegrationValidationError`
+    - `IntegrationAuthError`
+- Create `src/integrations/mcp/fastmcp_server/` tool wrappers:
+  - `calendar_tool.py`
+  - `docs_tool.py`
+  - `gmail_tool.py`
+- Enforce Google operation policies:
+  - Calendar title: `Advisor Q&A - {Topic} - {Code}`
+  - Docs append target: `"Advisor Pre-Bookings"`
+  - Gmail action: draft-only, `approval_status=pending`
+
+#### Testing Details
+- **Unit tests**
+  - `tests/integrations/test_contracts.py`
+    - Schema validation for each tool payload.
+  - `tests/integrations/test_idempotency.py`
+    - Duplicate operation returns same logical result.
+  - `tests/integrations/test_retry_policy.py`
+    - Retries only on transient failures.
+- **Integration tests**
+  - `tests/integration/test_domain_to_mcp.py`
+    - Domain command to MCP request mapping verification.
+  - `tests/integration/test_google_wrappers.py`
+    - Mocked Google API calls validate required fields and response mapping.
+- **Acceptance tests**
+  - Successful hold creation flow returns `event_id`.
+  - Docs append returns `document_id` and `appended_range`.
+  - Gmail draft returns `draft_id` and `approval_status=pending`.
+  - No code path sends email directly.
+
+### Phase 4 - Reliability, Observability, and Recovery
+
+#### Implementation Details
+- Create `src/observability/logger.py`
+  - Structured logger with fields:
+    - `timestamp`
+    - `session_id`
+    - `stage`
+    - `intent`
+    - `booking_code`
+    - `error_type`
+    - `latency_ms`
+- Create `src/observability/metrics.py`
+  - Counters:
+    - `calls_total`
+    - `calls_success`
+    - `fallback_prompts_total`
+    - `mcp_failures_total`
+  - Histograms:
+    - `turn_latency_ms`
+    - `integration_latency_ms`
+- Create `src/orchestration/fallback_policy.py`
+  - Error-class to user-message mapping.
+  - Re-prompt limit and graceful termination behavior.
+- Create `src/domain/booking/compensation.py`
+  - Partial-failure handlers:
+    - hold created, docs failed
+    - hold + docs success, gmail failed
+  - Recovery action queue (for deferred retries/manual follow-up).
+- Create `src/observability/audit_trail.py`
+  - Correlate each call with final artifact status:
+    - calendar_status
+    - docs_status
+    - gmail_status
+
+#### Testing Details
+- **Unit tests**
+  - `tests/observability/test_logger_fields.py`
+    - Required log keys present.
+  - `tests/orchestration/test_fallback_policy.py`
+    - Correct user-facing fallback prompts for each error class.
+  - `tests/domain/test_compensation.py`
+    - Partial-write recovery strategy selection.
+- **Integration tests**
+  - `tests/integration/test_failure_scenarios.py`
+    - STT error
+    - NLU parse failure
+    - domain validation failure
+    - MCP timeout/transient failure
+- **Acceptance tests**
+  - Each failed session has complete trace entries by `session_id`.
+  - User receives safe message for every known failure class.
+  - Partial integration failures are recoverable and visible in audit output.
+
+### Phase 5 - Voice UX Tuning + Demo Readiness
+
+#### Implementation Details
+- Create `src/voice/response_style.py`
+  - Response constraints:
+    - concise turn length policy
+    - confirmation-first formatting
+    - no jargon and no policy leakage
+- Create `src/voice/script_builder.py`
+  - Generate and maintain script artifacts in `Docs/`:
+    - opening prompts
+    - clarification prompts
+    - confirmations
+    - refusal responses
+    - completion prompts
+- Create `src/voice/tts_formatter.py`
+  - Improve spoken clarity:
+    - slow spelling for booking code
+    - explicit date-time phrasing in IST
+- Create `Docs/Script.md` (or equivalent) as the canonical demo script.
+- Ensure README documents:
+  - mock slot JSON source
+  - reschedule/cancel behavior
+  - artifact generation and verification steps
+
+#### Testing Details
+- **Unit tests**
+  - `tests/voice/test_response_style.py`
+    - Turn length and compliance phrase requirements.
+  - `tests/voice/test_tts_formatter.py`
+    - Booking-code and IST phrasing format checks.
+- **Integration tests**
+  - `tests/integration/test_end_to_end_voice_flow.py`
+    - Full simulated call from greeting to completion with artifact checks.
+  - `tests/integration/test_prepare_intent_flow.py`
+    - "What to prepare" intent does not trigger booking artifacts unless requested.
+- **Acceptance tests**
+  - Live/demo call is understandable, concise, and policy-compliant.
+  - Required evidence artifacts are generated and reproducible:
+    - calendar hold proof
+    - docs log proof
+    - gmail draft proof
+    - call demo recording or link
+
+## 10) Cross-Phase Test Strategy
+
+### Test Suite Structure
+- `tests/unit/` for deterministic logic:
+  - state machine
+  - validators
+  - formatters
+  - idempotency/retry logic
+- `tests/integration/` for boundary handoffs:
+  - Orchestration <-> NLU
+  - Orchestration <-> Domain
+  - Domain <-> MCP
+- `tests/e2e/` for complete conversational journeys with mocked STT/TTS and sandboxed integrations.
+
+### Quality Gates per Phase
+- Unit tests for new modules must pass before moving phases.
+- Integration tests for touched boundaries are mandatory.
+- No phase is complete unless its acceptance tests pass.
+- Regression suite must include:
+  - one happy-path booking
+  - one no-slot waitlist
+  - one reschedule
+  - one cancel
+  - one policy refusal (investment advice)
+
+### Recommended CI Sequence
+1. Lint + static checks
+2. Unit tests
+3. Integration tests
+4. E2E smoke tests (mock integrations for PR; real sandbox optional for nightly)
+5. Artifact contract validation (Calendar/Docs/Gmail response schema checks)
+
+## 11) Low-Level Completeness Addendum (Chat-First, Implementation-Critical)
+
+This addendum preserves all existing architecture details and adds missing low-level elements required for implementation parity with the chat-first execution model.
+
+### 11.1 Chat-First Invariant and Runtime Contract
+- **Implementation rule:** Ship full chat before any audio path.
+- **Single core API contract:** `Orchestrator.handle(user_text, session) -> AgentTurn`
+  - `AgentTurn.messages: list[str]` (one or more assistant text messages).
+  - `AgentTurn.side_effects: list[SideEffect]` (internal operations queue).
+- **Adapter invariant:** Voice is an adapter only:
+  - STT maps audio -> `user_text`.
+  - Each `AgentTurn.messages[i]` is sent to TTS in order.
+  - Orchestrator, NLU, domain, and Google MCP code are unchanged when voice is added.
+
+### 11.2 Cross-Cutting Conventions (Mandatory)
 - **Time model**
-  - Persist UTC instants (`start_utc`, `end_utc`) and render using `ZoneId=Asia/Kolkata`.
-  - Use injectable `Clock` in all time-dependent modules/tests.
-- **Correlation and identity**
-  - Every turn carries `session_id` and `correlation_id`.
-  - Propagate `correlation_id` through MCP calls and structured logs.
-- **Idempotency baseline**
-  - Use idempotency key `booking:{code}` (or deterministic hash of code + slot start) for create-hold workflows.
-- **Config baseline**
-  - Environment-driven config for Gemini key, Google credentials, secure-link template, and feature flags (`chat_enabled`, `voice_enabled`).
-  - Secrets only in `.env` (gitignored).
+  - Store `Instant` in UTC for persistence and integrations.
+  - Store/compute display timezone as `ZoneId("Asia/Kolkata")`.
+  - Use one injectable `Clock` in all domain/session logic for deterministic tests.
+- **Identifiers**
+  - `session_id`: UUID.
+  - `correlation_id`: per request/turn, propagated through logs and MCP tool calls.
+- **Idempotency**
+  - Booking hold idempotency key: `booking:{code}` (or hash of `code + slot_start_utc`).
+  - Retries must never duplicate external side effects.
+- **Configuration**
+  - Environment-driven config for:
+    - Google OAuth/service account credentials.
+    - Gemini (or equivalent) NLU API key.
+    - Secure link base template.
+    - Voice adapter enablement flags (default disabled).
+  - Secrets must be loaded from `.env` and `.env` remains gitignored.
 
-### 8.3 Canonical Session State (Expanded)
-- Required `SessionContext` fields:
-  - `state`
-  - `disclaimer_status` (`pending|acknowledged`)
-  - `intent`
-  - `preference` (partial `BookingPreference` allowed)
-  - `offered_slots` (0-2)
-  - `selected_slot`
-  - `pending_booking_code`
-  - `last_mcp_error` (sanitized)
-  - `turn_count`
-  - `advice_redirect_count`
-- Session store requirements:
-  - `get(session_id)`, `put(session)`
-  - idle TTL default 30 minutes
-  - thread-safe behavior for multi-worker runtime
+### 11.3 Recommended Repository Seams (Monolith-First)
+Use these seams even if framework/library choices differ:
 
-### 8.4 Deterministic State Handling + Side-Effect Ordering
-- Implement transition logic as:
-  - pure state handler returns `(new_state, side_effects[])`
-  - commit state first, then execute side effects in order
-- Canonical side-effect queue shape:
-  - `emit_assistant_text(text)`
-  - `google_calendar_mcp.createHold(...)`
-  - `google_docs_mcp.append(...)`
-  - `gmail_mcp.createDraft(...)`
-  - `persist_session`
-- Failure behavior:
-  - MCP failures transition to recovery state and produce user-safe apology/retry text
-  - apply compensation where feasible (for example delete hold if subsequent append fails)
+- `src/domain/` pure business/domain objects and rules.
+- `src/session/` orchestrator, state machine, session context, session store.
+- `src/nlu/` prompting, parsing, policy flags, PII-aware preprocessing.
+- `src/integrations/google_mcp/` FastMCP server + real and fake tool adapters.
+- `src/integrations/voice/` STT/TTS wrappers only (phase-gated).
+- `src/api/chat/` canonical chat HTTP surface for phases 1-6.
+- `src/api/voice/` optional real-time audio bridge (phase 7+).
+- `tests/unit/` and `tests/integration/` with chat-first as the default regression gate.
 
-### 8.5 NLU Structured Contract (Strict)
-- NLU result should support this full shape:
-  - `intent`
-  - `topic`
-  - `date_phrase`
-  - `time_window`
-  - `booking_code_guess`
-  - `wants_investment_advice`
-  - `confidence`
-- Resolver pipeline requirements:
-  - relative-date resolution with IST-aware `Clock`
-  - topic fuzzy mapping with clarification threshold
-  - low-confidence targeted clarification with capped retries per state
+### 11.4 Domain Completeness Additions
+- **Closed enums**
+  - `Topic`: strict keys matching problem statement and MCP title formatting.
+  - `Intent`: `book_new | reschedule | cancel | what_to_prepare | check_availability | unknown`
+  - `AdvisorDisclaimerStatus`: `pending | acknowledged`
+- **DTO expectations**
+  - `TimeSlot` includes `start_utc`, `end_utc`, and `label_ist` (render-safe for chat/TTS parity).
+  - `BookingPreference` includes normalized date/time window plus original user phrase (sanitized in logs).
+  - `BookingRecord` stores code/topic/slot/status (`tentative|waitlisted|cancelled`) and `created_at_utc`.
+- **Booking code behavior**
+  - Pattern target: `[A-Z]{2}-[A-Z][0-9]{3}` (configurable).
+  - Collision retry cap (example: 5).
+  - Add `to_spelling(code)` helper for voice-only readout path without altering chat value.
+- **Slot provider behavior**
+  - `findTwoSlots(...)` returns 0-2 slots, with deterministic test mode.
+  - Empty list must route to waitlist in orchestrator (not inside slot finder).
+  - Optional `holdWaitlistSlot(...)` for synthetic marker slot when PM flow requires.
 
-### 8.6 FastMCP Tooling and CI Fakes (Explicit)
-- Define FastMCP tools as first-class contracts:
+### 11.5 Session/State Machine Completeness Additions
+- **Full low-level state set**
+  - `GREET`
+  - `DISCLAIMER_AWAIT_ACK`
+  - `INTENT_ROUTING`
+  - `BOOK_TOPIC`
+  - `BOOK_TIME_PREFERENCE`
+  - `BOOK_OFFER_SLOTS`
+  - `BOOK_CONFIRM`
+  - `BOOK_EXECUTE_MCP`
+  - `CLOSE`
+  - `RESCHEDULE_COLLECT_CODE`
+  - `RESCHEDULE_OFFER_SLOTS`
+  - `CANCEL_COLLECT_CODE`
+  - `CANCEL_CONFIRM`
+  - `PREPARE_TOPIC_OR_GENERIC`
+  - `AVAILABILITY_QUERY`
+  - `ERROR_RECOVER`
+- **SessionContext fields**
+  - `state`, `disclaimer`, `intent`, `preference`, `offered_slots`, `selected_slot`
+  - `pending_booking_code`, `last_mcp_error`, `turn_count`, `advice_redirect_count`
+- **Turn execution model**
+  - Run PII gate first.
+  - Run advice-policy gate second.
+  - Run NLU parse third.
+  - Compute state transition and enqueue side effects.
+  - Commit state, then execute side effects in order.
+  - On MCP failure: transition to recovery state and emit user-safe retry/handoff message.
+
+### 11.6 NLU Contract and Resolver Pipeline Additions
+- **Strict structured NLU output**
+  - `intent`, `topic`, `date_phrase`, `time_window`, `booking_code_guess`, `wants_investment_advice`, `confidence`
+- **Resolver chain**
+  - `RelativeDateResolver(date_phrase, today_ist) -> LocalDate | needs_clarification`
+  - `TopicMapper` with fuzzy threshold and explicit clarification prompt below threshold.
+  - `IntentPolicy` with confidence threshold and bounded clarification loops per state.
+- **Prompt context packaging**
+  - Include current state name + last assistant question + recent transcript context.
+  - Enforce "JSON-only" output mode for parser stability.
+
+### 11.7 Google MCP + Google API Backing Additions
+- **FastMCP tool surface (in-process server)**
   - `calendar_create_hold(...) -> external_event_id`
   - `calendar_delete_hold(...)`
   - `docs_append_prebooking(...)`
-  - `gmail_create_draft(...) -> draft_id`
-- Back each tool via `google-api-python-client`:
-  - Calendar v3, Docs v1, Gmail v1
-- Add in-memory fake implementations for CI:
-  - `FakeCalendarMcp`
-  - `FakeNotesMcp`
-  - `FakeEmailMcp`
-- CI default uses fakes; real Google calls are manual/integration-environment only.
+  - `gmail_create_draft(...) -> draft_id` (never auto-send)
+- **Google API clients**
+  - Calendar: `build("calendar", "v3")`
+  - Docs: `build("docs", "v1")`
+  - Gmail: `build("gmail", "v1")`
+- **Operational policy**
+  - Per-tool timeout budgets (calendar 5-10s; docs/gmail ~5s).
+  - Single retry for transient network failures.
+  - Structured logs include `correlation_id`, tool name, latency, success/failure.
+  - Avoid logging full sensitive bodies where unnecessary.
+- **CI-safe fakes**
+  - `FakeCalendarMcp`, `FakeNotesMcp`, `FakeEmailMcp` using same signatures as production tools.
+  - CI integration tests must default to fakes and require no cloud credentials.
 
-### 8.7 Repo Layout Baseline (Monolith First)
-- Canonical module seams:
-  - `src/domain/`
-  - `src/session/`
-  - `src/nlu/`
-  - `src/integrations/google_mcp/`
-  - `src/integrations/voice/` (Phase 7+)
-  - `src/api/chat/` (primary in Phases 1-6)
-  - `src/api/voice/` (Phase 7+)
+### 11.8 Missing Late-Phase Delivery Detail (Phases 6-8)
+- **Phase 6: Secondary intent subgraphs**
+  - Reschedule, cancel, what-to-prepare, and availability flows fully integrated through chat API.
+- **Phase 7: Voice adapters only**
+  - Add STT/TTS + audio session plumbing; no core state/business rewrite.
+  - Chat remains regression baseline after voice launch.
+- **Phase 8: Hardening and operations**
+  - Correlation-friendly logging with transcript redaction policy.
+  - Session rate limits and TTL cleanup.
+  - Runbook for MCP outage degraded mode and failure-injection coverage.
 
-### 8.8 Phase Realignment (Canonical 1-8)
-- `Phase 1`: domain primitives + mock calendar (no external I/O)
-- `Phase 2`: session state machine + chat entrypoint (`handle` path only)
-- `Phase 3`: NLU wiring to orchestrator
-- `Phase 4`: FastMCP + Google execution and idempotent side effects
-- `Phase 5`: waitlist + investment-advice refusal hardening
-- `Phase 6`: secondary intent subgraphs (reschedule/cancel/prepare/availability)
-- `Phase 7`: voice adapters only (STT/TTS + audio glue, no core logic rewrite)
-- `Phase 8`: hardening/ops (redaction, rate limiting, failure-injection runbooks)
+### 11.9 Traceability Matrix (Requirement -> Implementation)
+- **Five intents** -> Intent enum + state branches + integration tests.
+- **Disclaimer + topic list + IST** -> disclaimer states + topic catalog + IST formatter.
+- **Two-slot offering** -> slot provider + offer state + deterministic tests.
+- **Booking code + Calendar/Docs/Gmail** -> booking execution use case + MCP trio.
+- **No PII** -> front-door PII gate + NLU/domain constraints + redacted logging.
+- **No investment advice** -> policy gate + static educational redirects.
+- **Waitlist + email draft** -> empty-slot branch + draft creation path.
+- **Secure URL output** -> config template consumed at close state.
+- **Voice UX** -> phase-gated STT/TTS adapters with unchanged orchestrator contract.
 
-### 8.9 Traceability Addendum
-- Acceptance must remain chat-regression-first:
-  - all five intents pass through chat suite before voice work begins
-  - voice tests add coverage but do not replace chat as quality gate
-- Requirement mapping must include:
-  - disclaimer gate
-  - no PII gate
-  - no investment advice gate
-  - two-slot offer rule
-  - booking code + Calendar/Docs/Gmail side effects
+### 11.10 PII Zero-Retention Policy (Non-Negotiable)
+This system must not collect or store PII at any stage (chat, voice, logs, analytics, or Google artifacts).
+
+- **PII denylist scope**
+  - Direct identifiers: full name, phone number, email, postal address, account/folio number, PAN/Aadhaar/tax IDs, DOB.
+  - Sensitive free text patterns and obvious variants (with spaces, separators, masking, or OCR/STT noise).
+- **Input-time rejection**
+  - Run `PiiGuard` before NLU parsing and before state transition on every turn.
+  - If PII detected: return fixed safe response with secure external handoff link and do not process user text further in that turn.
+  - Never ask users for PII in prompts, clarifications, or confirmations.
+- **State and storage constraints**
+  - `SessionContext` and `BookingRecord` are PII-free by schema.
+  - Disallow raw transcript persistence by default in production.
+  - If temporary transcript buffering is required for debugging, store redacted text only and enforce strict TTL.
+- **Logging and observability**
+  - Apply redaction before any log write.
+  - Logs must contain only metadata (`session_id`, `correlation_id`, state, intent, status, latency) and never raw user input.
+  - Redaction is mandatory for chat text, STT text, errors, and third-party exception payloads.
+- **NLU and model boundaries**
+  - NLU prompt builder must pass sanitized transcript only.
+  - Disable provider-side data retention where configurable.
+  - NLU structured output must not include PII fields; parser rejects responses containing disallowed keys/patterns.
+- **MCP/Google artifact constraints**
+  - Calendar title/body, Docs append lines, and Gmail drafts must use only topic, slot label, booking code, and policy-safe template text.
+  - Never include user-entered free text in Google artifacts.
+  - Pre-send validator blocks any artifact payload that matches PII rules.
+- **Voice-specific controls**
+  - STT partial/final transcripts are treated as sensitive input and pass through the same `PiiGuard`.
+  - Do not persist raw audio or raw transcript in production unless explicitly approved; default is disabled.
+  - TTS should never speak back suspected PII.
+- **Testing and release gates**
+  - Unit tests for `PiiGuard` and redaction with adversarial pattern variants.
+  - Integration tests asserting no PII reaches session store, logs, MCP payloads, or email drafts.
+  - Add CI gate that fails build if forbidden fields/patterns appear in fixtures, logs, or serialized artifacts.
+  - Add periodic audit test using synthetic PII injections across all intents (book/reschedule/cancel/prepare/availability).
+
+### 11.11 PII Controls Mapped to Delivery Phases
+- **Phase 1 (chat skeleton):** add `PiiGuard` before NLU/state transitions; block and redirect on detection; prompts never request identifiers.
+- **Phase 2 (domain decisioning):** enforce PII-free domain schemas and reject contaminated command payloads.
+- **Phase 3 (MCP integration):** validate outbound Calendar/Docs/Gmail payloads to prevent any user free text or identifier leaks.
+- **Phase 4 (observability):** apply redaction-before-write for logs/audit/telemetry; store metadata-only traces.
+- **Phase 5 (voice UX tuning):** ensure scripts and TTS formatting do not elicit or repeat PII while preserving booking-code clarity.
+- **Phase 6 (secondary intents):** reschedule/cancel identity checks rely on booking code only; no alternate personal verification fields.
+- **Phase 7 (voice adapters):** enforce identical PII policy for STT partial/final transcripts and disable raw audio retention by default.
+- **Phase 8 (hardening/ops):** add CI/runtime PII audits and failure-injection checks proving PII-safe degraded behavior.
