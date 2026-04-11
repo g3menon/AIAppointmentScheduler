@@ -10,10 +10,11 @@ class SessionContext:
     state: State = State.GREET
     disclaimer_acknowledged: bool = False
     intent: Optional[str] = None
+    topic: Optional[str] = None
+    time_preference: Optional[str] = None
     pending_booking_code: Optional[str] = None
     last_mcp_error: Optional[str] = None
     turn_count: int = 0
     advice_redirect_count: int = 0
-    offered_slots: list[dict] = field(default_factory=list)
-    selected_slot: Optional[dict] = None
-
+    offered_slots: list[str] = field(default_factory=list)
+    selected_slot: Optional[str] = None
