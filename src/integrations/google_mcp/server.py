@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from src.integrations.google_mcp.client import GoogleMcpClient
+from src.integrations.google_mcp.mcp_tool_dispatch import dispatch_mcp_tool
 
 mcp = FastMCP("advisor-booking")
 
@@ -24,7 +25,20 @@ def calendar_create_hold(
     calendar_id: str,
     idempotency_key: str,
 ) -> str:
-    return _get_client().create_calendar_hold(title, start_utc, end_utc, calendar_id, idempotency_key)
+    return str(
+        dispatch_mcp_tool(
+            _get_client(),
+            "calendar_create_hold",
+            {
+                "title": title,
+                "start_utc": start_utc,
+                "end_utc": end_utc,
+                "calendar_id": calendar_id,
+                "idempotency_key": idempotency_key,
+            },
+        )
+        or ""
+    )
 
 
 @mcp.tool()
@@ -37,9 +51,23 @@ def calendar_delete_hold(event_id: str, calendar_id: str) -> None:
 
 @mcp.tool()
 def docs_append_prebooking(doc_id: str, line: str, idempotency_key: str) -> str:
-    return _get_client().append_prebooking_log(doc_id, line, idempotency_key)
+    return str(
+        dispatch_mcp_tool(
+            _get_client(),
+            "docs_append_prebooking",
+            {"doc_id": doc_id, "line": line, "idempotency_key": idempotency_key},
+        )
+        or ""
+    )
 
 
 @mcp.tool()
 def gmail_create_draft(to: str, subject: str, body_markdown: str) -> str:
-    return _get_client().create_gmail_draft(to, subject, body_markdown)
+    return str(
+        dispatch_mcp_tool(
+            _get_client(),
+            "gmail_create_draft",
+            {"to": to, "subject": subject, "body_markdown": body_markdown},
+        )
+        or ""
+    )

@@ -1,5 +1,3 @@
-from dataclasses import asdict
-
 from phase1.session.orchestrator import Orchestrator
 from phase1.session.session_store import InMemorySessionStore
 
@@ -34,4 +32,4 @@ def post_message(session_id: str, text: str) -> dict:
     session = store.get_or_create(session_id)
     turn = get_orchestrator().handle(text, session)
     store.put(session)
-    return {"messages": turn.messages, "state": session.state.value, "session": asdict(session)}
+    return {"messages": turn.messages, "state": session.state.value, "session": session.to_public_dict()}

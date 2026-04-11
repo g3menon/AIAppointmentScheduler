@@ -13,7 +13,8 @@ from phase1.session.session_context import SessionContext
 from phase1.session.state import State
 from phase1.session.topic_catalog import resolve_topic
 from src.domain.booking_code_generator import BookingCodeGenerator
-from src.integrations.google_mcp.client import GoogleMcpClient, validate_mcp_prerequisites
+from src.integrations.google_mcp.booking_mcp_executor import BookingMcpBundle, run_booking_mcp_triplet
+from src.integrations.google_mcp.client import GoogleMcpClient
 
 
 def _default_mcp_client():
@@ -165,37 +166,37 @@ def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> A
         session.state = State.CLOSE
         return AgentTurn(messages=[T.mcp_booking_failed_message()])
 
-    if isinstance(orch.mcp, GoogleMcpClient):
-        validate_mcp_prerequisites(orch.mcp.settings)
-
     code = BookingCodeGenerator(exists_fn=lambda _: False).generate()
     session.booking_code = code
     ns = orch.mcp.settings.idempotency_namespace
     cal_id = orch.mcp.settings.calendar_id
     title = f"Advisor Q&A - {topic} - {code}"
+    log_line = f"{topic} | {slot.label_ist} | {code} | tentative_hold"
+    subject = f"Advisor pre-booking {code}"
+    body = (
+        f"Topic: {topic}\n"
+        f"Slot (IST label): {slot.label_ist}\n"
+        f"Booking code: {code}\n"
+        "This is a draft only — approval required before send.\n"
+    )
+    bundle = BookingMcpBundle(
+        calendar_title=title,
+        start_utc=slot.start_utc,
+        end_utc=slot.end_utc,
+        calendar_id=cal_id,
+        calendar_idempotency_key=f"{ns}:{code}:calendar",
+        doc_id=orch.mcp.settings.prebooking_doc_id,
+        doc_line=log_line,
+        doc_idempotency_key=f"{ns}:{code}:doc",
+        gmail_to=orch.mcp.settings.advisor_email_to,
+        gmail_subject=subject,
+        gmail_body=body,
+    )
 
     try:
-        event_id = orch.mcp.create_calendar_hold(
-            title,
-            slot.start_utc,
-            slot.end_utc,
-            cal_id,
-            f"{ns}:{code}:calendar",
-        )
-        log_line = f"{topic} | {slot.label_ist} | {code} | tentative_hold"
-        orch.mcp.append_prebooking_log(
-            orch.mcp.settings.prebooking_doc_id,
-            log_line,
-            f"{ns}:{code}:doc",
-        )
-        subject = f"Advisor pre-booking {code}"
-        body = (
-            f"Topic: {topic}\n"
-            f"Slot (IST label): {slot.label_ist}\n"
-            f"Booking code: {code}\n"
-            "This is a draft only — approval required before send.\n"
-        )
-        draft_id = orch.mcp.create_gmail_draft(orch.mcp.settings.advisor_email_to, subject, body)
+        mcp_result = run_booking_mcp_triplet(orch.mcp, bundle)
+        event_id = mcp_result.event_id
+        draft_id = mcp_result.draft_id
     except Exception:
         session.booking_code = None
         session.state = State.CLOSE

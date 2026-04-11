@@ -8,6 +8,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Node (Phase 5 Web UI)
+node_modules/
+web/chat-ui/dist/
+
 # Keys and credentials
 *.pem
 *-sa.json

@@ -1,7 +1,10 @@
+fastapi
 fastmcp
 google-api-python-client
 google-auth
 google-auth-oauthlib
+google-generativeai
 pytest
 python-dotenv
+uvicorn[standard]
 

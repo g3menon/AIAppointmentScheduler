@@ -17,14 +17,20 @@ The system must:
 ## 2) High-Level Layered Architecture
 
 ### 2.1 Primary Runtime (Phases 1-4): Chat Mode
-`Chat Input (UI/API)`  
+`Chat Input (tests / programmatic API)`  
 -> `Conversation Orchestration`  
 -> `NLU/LLM Layer`  
 -> `Booking Domain Service`  
 -> `MCP Integration Layer (FastMCP + Google APIs)`  
 -> `Chat Output`
 
-### 2.2 Later Runtime (Phase 5): Voice Over Chat Runtime
+### 2.2 Phase 5 — Web Chat UI (Node.js) for Manual QA
+**Purpose:** ship a browser chat surface **before** voice so stakeholders can exercise the full text flow (disclaimer, booking, MCP trio) without pytest or ad-hoc scripts.
+
+- **Stack:** lightweight **Node** dev server (e.g. Vite) serving static UI + hot reload; UI calls a **Python HTTP chat API** that wraps the existing `post_message(session_id, text)` contract (same orchestration as tests).
+- **Voice entry (later):** after **Phase 6** (STT/TTS), add a **voice mode** (toggle, tab, or route) in the **same** web app that streams or posts audio to STT, feeds transcript text into the same orchestrator path, and plays TTS for assistant replies — no duplicate business logic.
+
+### 2.3 Later Runtime (Phase 6+): Voice Over Chat Runtime
 `Speech-to-Text (ingress)`  
 -> `Chat Runtime (same orchestration/domain/integrations)`  
 -> `Text-to-Speech (egress)`
@@ -56,7 +62,7 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
      - `time_preference`
    - Emits structured parse output.
    - Applies policy-safe behavior (investment advice refusal).
-   - Does not call Google APIs directly.
+   - Does not call Google HTTP APIs with ad-hoc prompts. When `GEMINI_API_KEY` is configured (and tests are not running), **confirmed booking** may use Gemini **automatic function calling** so the model issues the same named MCP operations as FastMCP (`calendar_create_hold`, `docs_append_prebooking`, `gmail_create_draft`). The orchestrator supplies **canonical arguments**; tool implementations are shared with the FastMCP server via `dispatch_mcp_tool` → `GoogleMcpClient`. Set `BOOKING_MCP_DRIVER=direct` to skip the LLM and invoke Google directly.
 
 4. **Booking Domain Service**
    - Central business rules and policy checks.
@@ -64,11 +70,12 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
    - Generates booking code.
    - Emits canonical booking commands: `hold|waitlist|reschedule|cancel`.
 
-5. **MCP Integration Layer (FastMCP Server)**
-   - Exposes wrapped Google tools:
-     - `calendar.create_hold(...)`
-     - `docs.append_prebooking_log(...)`
-     - `gmail.create_draft(...)`
+5. **MCP Integration Layer (FastMCP Server + shared dispatch)**
+   - Exposes wrapped Google tools (FastMCP names align with Gemini tool names):
+     - `calendar_create_hold`
+     - `docs_append_prebooking`
+     - `gmail_create_draft`
+   - `src/integrations/google_mcp/mcp_tool_dispatch.dispatch_mcp_tool` is the single path to `GoogleMcpClient` for both the MCP server and LLM-driven booking execution (`booking_mcp_executor.run_booking_mcp_triplet`).
    - Handles retries, idempotency, and error normalization.
 
 6. **Voice Adapters (later)**
@@ -138,7 +145,8 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
   2. **Google Docs** — append a policy-safe pre-booking log line to the configured document (`GOOGLE_PREBOOKING_DOC_ID`).
   3. **Gmail** — create an **approval-gated draft only** to `ADVISOR_EMAIL_TO` (never auto-send).
 - Booking codes for Phase 1 use the shared generator (`src.domain.booking_code_generator`) until Phase 2 domain extraction is complete.
-- FastMCP server tools in `src/integrations/google_mcp/server.py` delegate to `GoogleMcpClient` so CLI/MCP and the chat runtime share one implementation.
+- Execution is centralized in `src/integrations/google_mcp/booking_mcp_executor.py`: **pytest**, missing `GEMINI_API_KEY`, or `BOOKING_MCP_DRIVER=direct` → direct `dispatch_mcp_tool` calls; otherwise Gemini automatic function calling drives the same three tools with orchestrator-built payloads.
+- FastMCP server tools in `src/integrations/google_mcp/server.py` use the same `dispatch_mcp_tool` path as the chat runtime so CLI/MCP and in-app behavior stay aligned.
 
 **Testing Details**
 - Unit:
@@ -246,15 +254,35 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
 - Known failure classes are recoverable or safely surfaced.
 - Partial failures are auditable and actionable.
 
-## Phase 5 - Voice Adapters (Chat <-> Voice Bridge)
-**Objective:** add voice without changing core behavior.
+## Phase 5 - Web Chat UI (Node.js) + HTTP Chat API
+**Objective:** browser-based manual testing of the Phase 1–4 chat runtime **before** integrating voice; same session/orchestrator/MCP behavior as automated tests.
 
 **Implementation Details**
-- Build `src/voice/`:
+- **Python:** expose a small **HTTP API** (e.g. FastAPI) that forwards `POST /api/chat/message` to `phase1.api.chat.routes.post_message` (body: `session_id`, `text`); enable **CORS** for local Node dev origin.
+- **Node:** `web/chat-ui/` — Vite (or equivalent) single-page chat: message list, text input, send to Python API via `fetch` (env-based base URL, e.g. `VITE_CHAT_API_URL`).
+- **Security (dev):** bind API to localhost by default; do not expose raw `.env` to the browser; no secrets in front-end bundles.
+- **Future hook:** reserve UI space or routing for **Phase 6 voice** (mic control, playback) without changing orchestrator contracts.
+
+**Testing Details**
+- Manual: full booking transcript in browser; with `.env` configured, confirm Calendar/Docs/Gmail draft side effects.
+- Automated (optional): smoke test HTTP handler with `TestClient` or Playwright against local stack.
+- Regression: existing **pytest** chat/orchestrator suites remain the primary CI gate; Web UI does not replace them.
+
+**Definition of Done**
+- Developer can run API + `npm run dev` and complete a booking conversation in the browser.
+- Assistant messages and session state match expectations for the same turns as integration tests.
+- Documentation lists exact run commands (see repository mapping below).
+
+## Phase 6 - Voice Adapters (Chat <-> Voice Bridge)
+**Objective:** add voice without changing core behavior; **surface voice from the Phase 5 Web UI** after STT/TTS are available.
+
+**Implementation Details**
+- Build `src/voice/` (or `src/integrations/voice/` per repo layout):
   - `stt_adapter.py` (audio -> normalized text input).
   - `tts_adapter.py` (chat response text -> speech output).
   - `chat_voice_bridge.py` for adapter orchestration.
   - `tts_formatter.py` for speaking clarity (booking code/date-time).
+- **Web UI:** extend `web/chat-ui/` with voice controls that call STT → same `Orchestrator.handle` text path → TTS for each assistant line (or merged prompt), reusing compliance/PII behavior.
 - Ensure parity:
   - Voice path reuses chat runtime exactly.
   - No duplicated domain or integration logic in voice modules.
@@ -264,13 +292,14 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
   - STT/TTS adapter normalization.
   - booking code/date-time spoken formatting.
 - Integration:
-  - same scenario in chat and voice yields equivalent domain command/artifacts.
+  - same scenario in chat (text UI) and voice yields equivalent domain command/artifacts.
 - E2E:
-  - simulated voice flow (STT -> chat runtime -> TTS).
+  - simulated voice flow (STT -> chat runtime -> TTS) and/or browser voice mode against local stack.
 
 **Definition of Done**
 - Voice path works via chat runtime bridge with behavior parity.
-- Chat and voice produce equivalent business outcomes for same intent input.
+- Chat (text) and voice produce equivalent business outcomes for same intent input.
+- Voice is reachable from the **same** Web UI built in Phase 5.
 - Demo artifacts are reproducible.
 
 ## 6) Cross-Phase Test Strategy
@@ -280,7 +309,8 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
 - `tests/integration/`: boundary handoffs (chat<->orchestration, orchestration<->domain, domain<->MCP, chat<->voice bridge).
 - `tests/e2e/`:
   - Phases 1-4: chat-only journeys.
-  - Phase 5 onward: chat + voice parity journeys.
+  - Phase 5: optional browser smoke against HTTP API + Node UI (manual or automated).
+  - Phase 6 onward: chat + voice parity journeys (including voice entry from Web UI).
 
 ### 6.2 Quality Gates for Phase Completion
 - New unit tests for changed modules must pass.
@@ -297,24 +327,29 @@ Maintain a stable regression suite with:
 - "what to prepare"
 - investment-advice refusal
 - MCP transient failure + retry behavior
-- chat-vs-voice outcome parity (from Phase 5 onward)
+- chat-vs-voice outcome parity (from Phase 6 onward)
 
 ### 6.4 Recommended CI Sequence
 1. Lint + static checks
 2. Unit tests
 3. Integration tests
-4. E2E smoke tests (chat-only for early phases; include voice from Phase 5)
+4. E2E smoke tests (chat-only for Phases 1-4; optional Web UI smoke in Phase 5; include voice from Phase 6)
 5. Contract validation for Calendar/Docs/Gmail MCP payloads
 
 ## 7) Suggested Repository Mapping
-- `src/interfaces/chat/` - chat API/CLI handlers and session routing
-- `src/orchestration/` - conversation state machine and handlers
+- `Phases/phase_1_chat_runtime/src/phase1/` - Phase 1 orchestrator, session store, `post_message` chat routes
+- `src/api/http/` - **Phase 5** FastAPI (or equivalent) HTTP wrapper for `post_message` (CORS for local Web UI)
+- `web/chat-ui/` - **Phase 5** Node (Vite) browser chat client; **Phase 6** voice controls layered here
+- `src/api/chat/` - re-exports Phase 1 chat surface for Python imports
+- `src/orchestration/` - conversation state machine and handlers (later-phase consolidation)
 - `src/nlu/` - intent/entity extraction and policy prompts
 - `src/domain/booking/` - booking rules, codes, decisioning
 - `src/integrations/mcp/` - FastMCP clients and contracts
-- `src/voice/` - STT/TTS adapters (introduced in Phase 5)
+- `src/voice/` or `src/integrations/voice/` - STT/TTS adapters (**Phase 6**)
 - `tests/` - unit/integration/e2e suites
 - `Docs/` - architecture, rules, scripts, and delivery notes
+
+**Local run (Phase 5):** from repo root, start Python API (e.g. `uvicorn src.api.http.chat_app:app --reload --port 8000`) and in `web/chat-ui/` run `npm install` && `npm run dev` (Vite default port proxied or `VITE_CHAT_API_URL` pointing at the API).
 # AI Appointment Scheduler - Phase-wise Architecture
 
 ## 1) System Goal
@@ -493,22 +528,29 @@ FastMCP tools are thin wrappers with strong validation and stable responses.
 - Traceable flow per call across all layers.
 - Partial failure paths handled with user-safe messaging.
 
-## Phase 5 - Voice UX Tuning + Demo Readiness
-**Objective:** Improve call clarity and prepare deliverables.
+## Phase 5 - Web Chat UI (Node.js) + HTTP Chat API
+**Objective:** Browser-based manual QA of the chat runtime before voice.
 
 **Scope**
-- Shorten prompts and improve confirmation cadence.
-- Add script file with production prompts/utterances.
-- Validate demo artifacts:
-  - call recording/live link
-  - calendar hold screenshot
-  - docs log proof
-  - gmail draft proof
-  - README updates
+- Python HTTP API wrapping `post_message` with CORS for local development.
+- Node/Vite chat UI under `web/chat-ui/` calling the API.
+- Documented two-process dev workflow (API + `npm run dev`).
 
 **Exit Criteria**
-- End-to-end demo runs reliably.
-- All required submission artifacts are reproducible.
+- Full booking flow can be completed in the browser with the same behavior as programmatic tests.
+- No orchestrator or MCP logic duplicated in the front-end.
+
+## Phase 6 - Voice Adapters + Web UI Voice Mode
+**Objective:** STT/TTS on the same orchestrator path; expose voice from the Phase 5 Web UI.
+
+**Scope**
+- `src/voice/` (or `src/integrations/voice/`) adapters only.
+- Extend `web/chat-ui/` with mic/playback (or equivalent) wired to STT → text chat path → TTS.
+- Demo readiness: scripts, TTS formatting for booking codes/IST, optional `Docs/Script.md`.
+
+**Exit Criteria**
+- Text and voice modes produce parity outcomes for the same intents.
+- Voice is reachable from the same web app as Phase 5 text chat.
 
 ## 6) Primary Runtime Sequence (Booking New Appointment)
 1. STT transcribes caller utterance.
@@ -533,11 +575,14 @@ FastMCP tools are thin wrappers with strong validation and stable responses.
 - **Auditability:** correlated logs by session and booking code.
 
 ## 8) Suggested Repository Mapping
-- `src/orchestration/` - conversation state machine and handlers
+- `Phases/phase_1_chat_runtime/src/phase1/` - Phase 1 orchestrator, session store, `post_message`
+- `src/api/http/` - Phase 5 FastAPI chat bridge
+- `web/chat-ui/` - Phase 5 Node/Vite browser UI; Phase 6 voice controls
+- `src/orchestration/` - conversation state machine and handlers (later consolidation)
 - `src/nlu/` - intent/entity extraction and response policy prompts
 - `src/domain/booking/` - business rules, booking code, decisioning
 - `src/integrations/mcp/` - FastMCP clients/tool contracts
-- `src/voice/` - STT/TTS adapters (boundary only)
+- `src/voice/` - STT/TTS adapters (Phase 6 boundary)
 - `Docs/` - architecture, rules, scripts, delivery notes
 
 ## 9) Low-Level, Phase-wise Implementation Plan
@@ -727,49 +772,46 @@ This section defines concrete implementation details and test coverage expected 
   - User receives safe message for every known failure class.
   - Partial integration failures are recoverable and visible in audit output.
 
-### Phase 5 - Voice UX Tuning + Demo Readiness
+### Phase 5 - Web Chat UI (Node.js) + HTTP Chat API
 
 #### Implementation Details
-- Create `src/voice/response_style.py`
-  - Response constraints:
-    - concise turn length policy
-    - confirmation-first formatting
-    - no jargon and no policy leakage
-- Create `src/voice/script_builder.py`
-  - Generate and maintain script artifacts in `Docs/`:
-    - opening prompts
-    - clarification prompts
-    - confirmations
-    - refusal responses
-    - completion prompts
+- Create `src/api/http/chat_app.py` (FastAPI recommended):
+  - `POST /api/chat/message` with JSON `{ "session_id": string, "text": string }` → returns same shape as `post_message` (messages, state, session snapshot).
+  - `GET /api/health` for readiness checks.
+  - CORS middleware allowing `http://localhost:5173` (Vite default) and configurable extra origins via environment if needed.
+- Bootstrap `sys.path` so imports resolve `phase1` and top-level `src` when launched via `uvicorn` from repo root.
+- Create `web/chat-ui/`:
+  - `package.json` with Vite dev server; static chat UI (message thread + input).
+  - Environment variable for API base URL (e.g. `VITE_CHAT_API_URL=http://127.0.0.1:8000`).
+  - Optional Vite proxy from `/api` → Python API to avoid CORS during dev.
+- Do **not** embed secrets in the front-end; browser only sends user text and `session_id`.
+
+#### Testing Details
+- **Manual acceptance**
+  - Run API + Vite; complete disclaimer → book → confirm → verify three MCP writes when Google is configured (or recorder under test).
+- **Optional automated**
+  - HTTP `TestClient` test for `/api/chat/message` returning 200 and non-empty messages for `"hello"`.
+- **Regression**
+  - Phase 1 `pytest` suites unchanged and mandatory in CI.
+
+### Phase 6 - Voice Adapters + Web UI Voice Mode
+
+#### Implementation Details
+- Create `src/voice/response_style.py` (or under `src/integrations/voice/`)
+  - Response constraints: concise turns, confirmation-first, no policy leakage.
+- Create `src/voice/script_builder.py` and `Docs/Script.md` (or equivalent) for demo scripts.
 - Create `src/voice/tts_formatter.py`
-  - Improve spoken clarity:
-    - slow spelling for booking code
-    - explicit date-time phrasing in IST
-- Create `Docs/Script.md` (or equivalent) as the canonical demo script.
-- Ensure README documents:
-  - mock slot JSON source
-  - reschedule/cancel behavior
-  - artifact generation and verification steps
+  - Spoken clarity: booking code spelling, explicit IST date-time phrasing.
+- Wire STT/TTS into `web/chat-ui/` (voice toggle) so audio never bypasses `Orchestrator.handle` text contract.
 
 #### Testing Details
 - **Unit tests**
-  - `tests/voice/test_response_style.py`
-    - Turn length and compliance phrase requirements.
-  - `tests/voice/test_tts_formatter.py`
-    - Booking-code and IST phrasing format checks.
+  - `tests/voice/test_response_style.py`, `tests/voice/test_tts_formatter.py`
 - **Integration tests**
-  - `tests/integration/test_end_to_end_voice_flow.py`
-    - Full simulated call from greeting to completion with artifact checks.
-  - `tests/integration/test_prepare_intent_flow.py`
-    - "What to prepare" intent does not trigger booking artifacts unless requested.
+  - `tests/integration/test_end_to_end_voice_flow.py` (simulated STT text → orchestrator → TTS payload).
+  - Parity: same transcript as typed chat yields same booking artifacts.
 - **Acceptance tests**
-  - Live/demo call is understandable, concise, and policy-compliant.
-  - Required evidence artifacts are generated and reproducible:
-    - calendar hold proof
-    - docs log proof
-    - gmail draft proof
-    - call demo recording or link
+  - Voice mode in browser (post Phase 6) matches text chat outcomes; demo artifacts reproducible.
 
 ## 10) Cross-Phase Test Strategy
 
@@ -844,8 +886,10 @@ Use these seams even if framework/library choices differ:
 - `src/nlu/` prompting, parsing, policy flags, PII-aware preprocessing.
 - `src/integrations/google_mcp/` FastMCP server + real and fake tool adapters.
 - `src/integrations/voice/` STT/TTS wrappers only (phase-gated).
-- `src/api/chat/` canonical chat HTTP surface for phases 1-6.
-- `src/api/voice/` optional real-time audio bridge (phase 7+).
+- `src/api/http/` HTTP chat API for **Phase 5** Web UI (`post_message` wrapper).
+- `web/chat-ui/` Node/Vite UI (**Phase 5** text; **Phase 6** voice controls).
+- `src/api/chat/` Python re-exports Phase 1 chat routes.
+- `src/api/voice/` optional real-time audio bridge (late Phase 6+ as needed).
 - `tests/unit/` and `tests/integration/` with chat-first as the default regression gate.
 
 ### 11.4 Domain Completeness Additions
@@ -926,11 +970,10 @@ Use these seams even if framework/library choices differ:
   - CI integration tests must default to fakes and require no cloud credentials.
 
 ### 11.8 Missing Late-Phase Delivery Detail (Phases 6-8)
-- **Phase 6: Secondary intent subgraphs**
-  - Reschedule, cancel, what-to-prepare, and availability flows fully integrated through chat API.
-- **Phase 7: Voice adapters only**
-  - Add STT/TTS + audio session plumbing; no core state/business rewrite.
-  - Chat remains regression baseline after voice launch.
+- **Phase 6: Voice adapters + Web UI voice mode**
+  - STT/TTS boundary only; same `Orchestrator.handle` contract; expose voice from `web/chat-ui/`.
+- **Phase 7: Secondary intent subgraphs**
+  - Reschedule, cancel, what-to-prepare, and availability flows fully integrated through chat API (text and, where applicable, voice).
 - **Phase 8: Hardening and operations**
   - Correlation-friendly logging with transcript redaction policy.
   - Session rate limits and TTL cleanup.
@@ -945,7 +988,8 @@ Use these seams even if framework/library choices differ:
 - **No investment advice** -> policy gate + static educational redirects.
 - **Waitlist + email draft** -> empty-slot branch + draft creation path.
 - **Secure URL output** -> config template consumed at close state.
-- **Voice UX** -> phase-gated STT/TTS adapters with unchanged orchestrator contract.
+- **Web text QA** -> Phase 5 `web/chat-ui/` + `src/api/http/chat_app.py` calling `post_message`.
+- **Voice UX** -> Phase 6 STT/TTS adapters with unchanged orchestrator contract; entry from the same Web UI.
 
 ### 11.10 PII Zero-Retention Policy (Non-Negotiable)
 This system must not collect or store PII at any stage (chat, voice, logs, analytics, or Google artifacts).
@@ -988,7 +1032,7 @@ This system must not collect or store PII at any stage (chat, voice, logs, analy
 - **Phase 2 (domain decisioning):** enforce PII-free domain schemas and reject contaminated command payloads.
 - **Phase 3 (MCP integration):** validate outbound Calendar/Docs/Gmail payloads to prevent any user free text or identifier leaks.
 - **Phase 4 (observability):** apply redaction-before-write for logs/audit/telemetry; store metadata-only traces.
-- **Phase 5 (voice UX tuning):** ensure scripts and TTS formatting do not elicit or repeat PII while preserving booking-code clarity.
-- **Phase 6 (secondary intents):** reschedule/cancel identity checks rely on booking code only; no alternate personal verification fields.
-- **Phase 7 (voice adapters):** enforce identical PII policy for STT partial/final transcripts and disable raw audio retention by default.
+- **Phase 5 (Web UI):** browser must not persist raw transcripts in `localStorage`/analytics by default; use HTTPS in non-local deployments; never ship API keys or Google credentials to the client.
+- **Phase 6 (voice + TTS):** scripts and TTS formatting do not elicit or repeat PII; STT partial/final transcripts use the same `PiiGuard` as chat; disable raw audio retention by default.
+- **Phase 7 (secondary intents):** reschedule/cancel identity checks rely on booking code only; no alternate personal verification fields.
 - **Phase 8 (hardening/ops):** add CI/runtime PII audits and failure-injection checks proving PII-safe degraded behavior.
