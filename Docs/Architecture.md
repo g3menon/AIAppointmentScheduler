@@ -121,40 +121,40 @@ Speech layers remain boundary adapters only and never bypass chat runtime logic.
 
 ## 5) Phase-wise Delivery Plan
 
-## Phase 1 - Chat Runtime Skeleton + Compliance
-**Objective:** functional chat-first booking workflow without external writes.
+## Phase 1 - Chat Runtime Skeleton + Compliance + Real Google MCP
+**Objective:** functional chat-first booking workflow with the same operational artifacts described in `Docs/Description.md`, using **real Google APIs** behind the MCP tool surface (not in-process fakes).
 
 **Implementation Details**
-- Build `src/interfaces/chat/`:
-  - `chat_handler.py` (text in/out).
-  - `session_router.py` (maps user session to orchestrator state).
-- Build `src/orchestration/`:
-  - state machine stages: greet -> disclaimer -> capture -> offer -> confirm -> complete.
+- Build chat/session orchestration (Phase 1 code lives under `Phases/phase_1_chat_runtime/` as package `phase1`):
+  - state machine stages through disclaimer, intent/topic/time capture, two-slot offer, explicit yes/no confirmation, then completion.
   - fallback/re-prompt handlers.
 - Build compliance guards:
   - topic whitelist.
   - no-PII prompt/validation guard.
   - investment-advice refusal templates.
-- Build mock slots provider returning exactly two slots in IST.
-- Keep MCP integration as stubs only.
+- Mock **slot offering** only (two deterministic IST options); calendar **holds** for the chosen slot are created via Google Calendar at confirmation.
+- **MCP integration (real):** after the user confirms the slot, the runtime must invoke (in order, with idempotency keys):
+  1. **Google Calendar** — tentative hold (`Advisor Q&A - {Topic} - {Code}`).
+  2. **Google Docs** — append a policy-safe pre-booking log line to the configured document (`GOOGLE_PREBOOKING_DOC_ID`).
+  3. **Gmail** — create an **approval-gated draft only** to `ADVISOR_EMAIL_TO` (never auto-send).
+- Booking codes for Phase 1 use the shared generator (`src.domain.booking_code_generator`) until Phase 2 domain extraction is complete.
+- FastMCP server tools in `src/integrations/google_mcp/server.py` delegate to `GoogleMcpClient` so CLI/MCP and the chat runtime share one implementation.
 
 **Testing Details**
 - Unit:
   - state transitions.
   - topic whitelist.
   - PII detector.
-- Integration:
-  - chat handler -> orchestrator session flow.
-  - all 5 intents in chat mode.
-  - assert no MCP writes happen.
-- E2E:
-  - one full booking chat transcript with disclaimer and IST repetition.
+- Integration / E2E:
+  - chat handler -> orchestrator session flow; all 5 intents in chat mode.
+  - **Automated tests** use an in-memory **call recorder** (not Google) when `PYTEST_CURRENT_TEST` is set so CI stays credential-free.
+  - **Manual / sandbox verification:** run the same flow with a filled `.env` and confirm hold, doc append, and draft in Google.
 
 **Definition of Done**
 - All 5 intents work in chat mode.
 - Disclaimer is always shown before booking progression.
-- Date/time repeated in IST before confirmation.
-- No Calendar/Docs/Gmail write path active.
+- Date/time repeated in IST before final confirmation.
+- On confirmed booking, Calendar hold + Docs append + Gmail draft succeed against real Google when credentials and resource IDs are configured.
 
 ## Phase 2 - Domain Logic + Booking Decisioning
 **Objective:** centralize deterministic business decisions.
@@ -439,19 +439,19 @@ FastMCP tools are thin wrappers with strong validation and stable responses.
 
 ## 5) Phase-wise Delivery Plan
 
-## Phase 1 - Conversational Skeleton + Compliance Guardrails
-**Objective:** Get a safe call flow running end-to-end without external writes.
+## Phase 1 - Conversational Skeleton + Compliance Guardrails + Real Google MCP
+**Objective:** Safe chat flow end-to-end with **real** Calendar hold, Docs log append, and Gmail **draft** (aligned with `Docs/Description.md`), after explicit user confirmation.
 
 **Scope**
 - Implement orchestrator states and transitions.
 - Add mandatory disclaimer and refusal behavior.
 - Add topic whitelist and no-PII checks.
-- Mock slot offering (two slots from static calendar JSON).
+- Mock slot offering only (two slots from static data); perform Google writes at confirmation via `GoogleMcpClient`.
 
 **Exit Criteria**
-- Voice flow supports all 5 intents at conversational level.
-- No booking artifacts written yet.
+- Chat supports all 5 intents at conversational level.
 - Confirm/repeat date-time in IST before final confirmation.
+- On “yes” after slot selection: Calendar hold + Docs append + Gmail draft created (draft-only; no send).
 
 ## Phase 2 - Domain Logic + Booking Code + Slot Decisions
 **Objective:** Introduce deterministic business actions.
@@ -544,75 +544,29 @@ FastMCP tools are thin wrappers with strong validation and stable responses.
 
 This section defines concrete implementation details and test coverage expected in each phase.
 
-### Phase 1 - Conversational Skeleton + Compliance Guardrails
+### Phase 1 - Conversational Skeleton + Compliance + Real Google MCP
 
 #### Implementation Details
-- Create `src/orchestration/state_machine.py`
-  - `ConversationStage` enum:
-    - `GREET`
-    - `DISCLAIMER`
-    - `INTENT_CAPTURE`
-    - `TOPIC_CAPTURE`
-    - `TIME_CAPTURE`
-    - `SLOT_OFFER`
-    - `CONFIRMATION`
-    - `COMPLETION`
-  - `advance(session_state, nlu_result)` function for deterministic stage transitions.
-- Create `src/orchestration/session_store.py`
-  - In-memory session model:
-    - `session_id`
-    - `current_stage`
-    - `intent`
-    - `topic`
-    - `time_preference`
-    - `selected_slot`
-    - `timezone="IST"`
-    - `policy_flags`
-- Create `src/orchestration/prompt_templates.py`
-  - Canonical response templates for:
-    - disclaimer
-    - topic clarification
-    - time capture
-    - two-slot offer
-    - confirmation with IST repeat
-    - secure-link completion message
-- Create `src/orchestration/topic_catalog.py`
-  - Allowed topics:
-    - KYC/Onboarding
-    - SIP/Mandates
-    - Statements/Tax Docs
-    - Withdrawals & Timelines
-    - Account Changes/Nominee
-- Create `src/orchestration/pii_guard.py`
-  - Regex/heuristic checks for phone/email/account-like patterns.
-  - Reject or redact user-provided sensitive values in session transcript.
-- Create `src/orchestration/mock_calendar.py`
-  - Static slot provider returning exactly two slots in IST.
-- Keep external integration stubs only:
-  - `src/integrations/mcp/stub_client.py` returns `NOT_ENABLED_IN_PHASE_1`.
+- **Package layout:** Phase 1 chat runtime is implemented under `Phases/phase_1_chat_runtime/src/phase1/` (orchestrator, prompts, PII guard, topic catalog, in-memory session store, chat routes).
+- **State machine:** maps to Architecture §11.5 states (`GREET`, `DISCLAIMER_AWAIT_ACK`, intent routing, `BOOK_TOPIC`, `BOOK_TIME_PREFERENCE`, `BOOK_OFFER_SLOTS`, `BOOK_CONFIRM`, `CLOSE`, plus reschedule/cancel/prepare/availability branches).
+- **Mock slot source:** `MockCalendarService` returns exactly two IST-labeled slots; UTC instants on each `TimeSlot` feed Calendar API `start`/`end`.
+- **Real Google MCP (shared implementation):** `src/integrations/google_mcp/client.py` (`GoogleMcpClient`) performs:
+  - Calendar `events.insert` tentative hold with title `Advisor Q&A - {Topic} - {Code}` and private extended property carrying an idempotency key.
+  - Docs `documents.batchUpdate` append of a **policy-safe** log line (topic, IST slot label, booking code, action type) — **no user free text**.
+  - Gmail `users.drafts.create` — **draft only** to `ADVISOR_EMAIL_TO`.
+- **FastMCP:** `src/integrations/google_mcp/server.py` tools call the same `GoogleMcpClient` methods for MCP-driven invocations.
+- **Booking code:** Phase 1 uses `src.domain.booking_code_generator.BookingCodeGenerator` until Phase 2 domain owns codes exclusively.
+- **Credentials:** OAuth refresh token or service account JSON via environment variables (see `.env.example`).
 
 #### Testing Details
-- **Unit tests**
-  - `tests/orchestration/test_state_machine.py`
-    - Valid stage transitions.
-    - Missing-topic and missing-time re-prompt behavior.
-  - `tests/orchestration/test_pii_guard.py`
-    - Phone/email/account strings are blocked/redacted.
-  - `tests/orchestration/test_topic_catalog.py`
-    - Supported topics accepted; unsupported topics rejected.
-- **Integration tests**
-  - `tests/integration/test_phase1_conversation_paths.py`
-    - Simulated transcript for each intent:
-      - book
-      - reschedule
-      - cancel
-      - prepare
-      - availability
-    - Asserts no MCP call is attempted.
+- **Unit tests** (`Phases/phase_1_chat_runtime/tests/unit/`): state transitions, PII guard, topic catalog.
+- **Integration / E2E** (`Phases/phase_1_chat_runtime/tests/integration`, `.../e2e`): full transcripts per intent; **pytest** uses `RecordingGoogleMcpClient` (in-memory) automatically when `PYTEST_CURRENT_TEST` is set — not a substitute for production Google behavior, only for CI.
+- **Manual acceptance:** with valid `.env`, run a booking through chat and verify the three Google artifacts.
 - **Acceptance tests**
   - Disclaimer appears before booking confirmation path.
   - IST time is repeated before final user confirmation.
   - Exactly two slots are offered in happy path.
+  - After “yes”, three MCP operations are invoked (Calendar, Docs, Gmail draft).
 
 ### Phase 2 - Domain Logic + Booking Code + Slot Decisions
 

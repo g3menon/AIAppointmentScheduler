@@ -1,5 +1,3 @@
-"""Shared domain shapes for later phases (Phase 2+). Phase 1 lives in `phase1` package."""
-
 from dataclasses import dataclass
 from enum import Enum
 
@@ -11,6 +9,14 @@ class Intent(str, Enum):
     WHAT_TO_PREPARE = "what_to_prepare"
     CHECK_AVAILABILITY = "check_availability"
     UNKNOWN = "unknown"
+
+
+class Topic(str, Enum):
+    KYC_ONBOARDING = "KYC/Onboarding"
+    SIP_MANDATES = "SIP/Mandates"
+    STATEMENTS_TAX_DOCS = "Statements/Tax Docs"
+    WITHDRAWALS_TIMELINES = "Withdrawals & Timelines"
+    ACCOUNT_CHANGES_NOMINEE = "Account Changes/Nominee"
 
 
 @dataclass

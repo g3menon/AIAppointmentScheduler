@@ -1,4 +1,4 @@
-from src.session.session_context import SessionContext
+from phase1.session.session_context import SessionContext
 
 
 class InMemorySessionStore:
@@ -15,3 +15,6 @@ class InMemorySessionStore:
 
     def put(self, context: SessionContext) -> None:
         self._sessions[context.session_id] = context
+
+    def clear(self) -> None:
+        self._sessions.clear()

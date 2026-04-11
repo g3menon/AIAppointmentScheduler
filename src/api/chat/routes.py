@@ -1,14 +1,17 @@
-from dataclasses import asdict
+"""Chat surface re-exports Phase 1 implementation (package `phase1`)."""
 
-from src.session.orchestrator import Orchestrator
-from src.session.session_store import InMemorySessionStore
+from phase1.api.chat.routes import (
+    get_orchestrator,
+    orchestrator,
+    post_message,
+    set_orchestrator_for_tests,
+    store,
+)
 
-orchestrator = Orchestrator()
-store = InMemorySessionStore()
-
-
-def post_message(session_id: str, text: str) -> dict:
-    session = store.get_or_create(session_id)
-    turn = orchestrator.handle(text, session)
-    store.put(session)
-    return {"messages": turn.messages, "state": session.state.value, "session": asdict(session)}
+__all__ = [
+    "get_orchestrator",
+    "orchestrator",
+    "post_message",
+    "set_orchestrator_for_tests",
+    "store",
+]

@@ -10,21 +10,26 @@ Use this with `.env.example` to create your local `.env` safely. The example fil
 2. Edit `.env` and replace all placeholders (`YOUR_...`, empty fields you intend to use).
 3. **Never** commit `.env` or paste secrets into chat, tickets, or screenshots.
 
-## 2) Minimum setup for Phase 1–2 (chat + domain, no Google writes)
+## 2) Phase 1 (chat + real Google MCP on confirmation)
 
-Set at least:
+For a **manual** booking run that creates Calendar / Docs / Gmail draft artifacts, set:
 
-| Variable | Value | Notes |
-|----------|--------|--------|
-| `GOOGLE_MCP_MODE` | `fake` | No Google credentials needed |
-| `ENABLE_VOICE_API` | `false` | Voice comes in Phase 7+ |
-| `ENABLE_STT` / `ENABLE_TTS` | `false` | Same |
-| `PII_GUARD_ENABLED` | `true` | Required |
-| `PII_BLOCK_ON_DETECT` | `true` | Required |
-| `PII_STORE_RAW_TRANSCRIPT` | `false` | Required |
-| `PII_STORE_RAW_AUDIO` | `false` | Required |
+| Variable | Notes |
+|----------|--------|
+| `GOOGLE_AUTH_MODE` | Prefer `service_account` for headless runs |
+| `GOOGLE_SERVICE_ACCOUNT_FILE` | Absolute path to the JSON key |
+| `GOOGLE_DELEGATED_SUBJECT` | **Google Workspace:** mailbox user to impersonate for Gmail (`userId='me'`). Required for Gmail drafts with a service account. |
+| `GOOGLE_CALENDAR_ID` | Calendar shared with the SA (or `primary` when delegating as that user) |
+| `GOOGLE_PREBOOKING_DOC_ID` | Doc shared with the SA email (`client_email` in JSON) |
+| `ADVISOR_EMAIL_TO` | Draft recipient (draft-only) |
+| OAuth fields | Use if you choose `GOOGLE_AUTH_MODE=oauth` instead of SA + delegation |
+| `ENABLE_VOICE_API` | `false` until Phase 7+ |
+| `ENABLE_STT` / `ENABLE_TTS` | `false` |
+| PII flags | `PII_GUARD_ENABLED=true`, `PII_BLOCK_ON_DETECT=true`, no raw transcript/audio storage |
 
-You can leave `GEMINI_API_KEY` and all `GOOGLE_OAUTH_*` / `GOOGLE_SERVICE_ACCOUNT_FILE` unset until you need live NLU or Google tools.
+**Automated tests (`pytest`)** do not call Google; they use an in-memory MCP recorder when `PYTEST_CURRENT_TEST` is set.
+
+You can leave `GEMINI_API_KEY` unset until you enable provider-backed NLU (Phase 3+).
 
 ## 3) NLU (Gemini) for Phase 3+
 
@@ -35,12 +40,12 @@ You can leave `GEMINI_API_KEY` and all `GOOGLE_OAUTH_*` / `GOOGLE_SERVICE_ACCOUN
 
 If you temporarily use **rules-only** NLU (no provider calls), you can still keep the same env keys for when you switch the implementation on.
 
-## 4) Google MCP “real” mode (Phase 3+)
+## 4) Google MCP (Calendar, Docs, Gmail draft) — Phase 1+
 
-### 4.1 Enable real mode
+### 4.1 What to configure
 
-- Set `GOOGLE_MCP_MODE=real`.
 - Fill **all** of: auth (OAuth *or* service account), `GOOGLE_CALENDAR_ID`, `GOOGLE_PREBOOKING_DOC_ID`, `ADVISOR_EMAIL_TO`.
+- There is no `GOOGLE_MCP_MODE=fake` switch: **pytest** avoids the network via an in-memory recorder; **runtime** uses `GoogleMcpClient.from_env()` with these credentials.
 
 ### 4.2 OAuth (user credentials)
 
@@ -54,12 +59,12 @@ If you temporarily use **rules-only** NLU (no provider calls), you can still kee
    - `GOOGLE_OAUTH_REFRESH_TOKEN`
 6. If you use a Web client, set `GOOGLE_OAUTH_REDIRECT_URI` to the exact redirect URI registered in the console.
 
-### 4.3 Service account (JSON file)
+### 4.3 Service account (JSON file) — recommended
 
 1. **IAM & Admin → Service accounts** — create a service account and a **JSON key**; download the file.
 2. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_FILE` to the **absolute path** of that JSON file.
-3. **Share** the target calendar and the pre-booking Doc with the service account’s email (from the JSON, `client_email`).
-4. Domain-wide delegation is optional and advanced; if your admin sets it up, you may use `GOOGLE_DELEGATED_SUBJECT` as documented in `.env.example`.
+3. **Share** the target calendar and the pre-booking Doc with the service account’s email (`client_email` in the JSON).
+4. **Gmail (drafts):** a service account has no consumer Gmail mailbox. With **Google Workspace**, enable **domain-wide delegation** for the service account, then in Admin Console authorize the OAuth client ID with the same scopes the app uses. Set `GOOGLE_DELEGATED_SUBJECT` to the Workspace user whose mailbox should receive drafts (typically matches the mailbox you use with `userId='me'` in the API). Without Workspace + delegation, use **OAuth** for Gmail instead.
 
 ### 4.4 Resource IDs
 

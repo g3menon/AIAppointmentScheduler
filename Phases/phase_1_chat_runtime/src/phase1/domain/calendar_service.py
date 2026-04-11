@@ -3,7 +3,6 @@ from .models import TimeSlot
 
 class MockCalendarService:
     def find_two_slots(self, preferred_date_ist: str | None = None) -> list[TimeSlot]:
-        # Phase 1 deterministic placeholder.
         slots = [
             TimeSlot(
                 start_utc="2026-04-10T09:30:00Z",
@@ -17,4 +16,3 @@ class MockCalendarService:
             ),
         ]
         return slots[:2]
-

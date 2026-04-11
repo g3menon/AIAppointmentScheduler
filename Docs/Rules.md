@@ -30,14 +30,14 @@ This document enforces how phases must be implemented against `Docs/Architecture
 | P1.2 | Implement orchestrator state machine. | Required stages: greet, disclaimer, capture, offer, confirm, complete. |
 | P1.3 | Support all 5 intents in chat mode. | book, reschedule, cancel, what to prepare, availability. |
 | P1.4 | Enforce topic whitelist and no-PII prompts. | Unsupported topics and sensitive user inputs are handled safely. |
-| P1.5 | Offer exactly two mock slots in IST. | No real external dependency in this phase. |
-| P1.6 | Disable all external writes. | Calendar/Docs/Gmail interactions remain stubbed. |
+| P1.5 | Offer exactly two mock slots in IST. | Slot *options* are deterministic mock data; the **selected** slot is persisted to Google Calendar as a tentative hold after confirmation. |
+| P1.6 | Use real Google MCP for operational artifacts. | After explicit user confirmation, invoke **real** Calendar hold, Docs append, and Gmail **draft** (never auto-send) via `GoogleMcpClient` / FastMCP tools — not in-process fake Google services. |
 
 ### Definition of Done (Phase 1)
 - Chat conversation supports all five intents end-to-end.
 - Disclaimer appears before any booking confirmation path.
 - IST date/time is repeated before user confirm.
-- No MCP writes occur in this phase.
+- On confirmed booking, Calendar hold + Docs pre-booking append + Gmail draft succeed when Google credentials and resource IDs are configured (automated tests may substitute an in-memory recorder — see `Docs/Architecture.md`).
 
 ---
 
