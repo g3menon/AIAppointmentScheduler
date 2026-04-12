@@ -1,5 +1,5 @@
-from src.integrations.google_mcp.backing_services import McpContractError
-from src.integrations.google_mcp.fakes import FakeGoogleMcpClient
+from phase3.integrations.contracts import McpContractError
+from phase3.integrations.fakes import FakeGoogleMcpClient
 from src.integrations.google_mcp.mcp_tool_dispatch import _IDEMPOTENT_RESULTS, dispatch_mcp_tool
 from src.integrations.google_mcp.settings import GoogleMcpSettings
 

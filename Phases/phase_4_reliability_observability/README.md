@@ -11,8 +11,8 @@
 - `tests/integration/test_partial_failure_recovery.py`
 
 ## Checklist
-- [ ] Structured logs include correlation fields
-- [ ] Redaction-before-write enforced
-- [ ] Partial-failure compensation paths implemented
-- [ ] User-safe fallback responses verified
+- [x] Structured logs include correlation fields
+- [x] Redaction-before-write enforced
+- [x] Partial-failure compensation paths implemented
+- [x] User-safe fallback responses verified
 

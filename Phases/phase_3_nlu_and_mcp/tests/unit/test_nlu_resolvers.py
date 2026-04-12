@@ -1,5 +1,5 @@
-from src.nlu.engine import NluEngine
-from src.nlu.resolvers import RelativeDateResolver, TopicMapper
+from phase3.nlu.engine import NluEngine
+from phase3.nlu.resolvers import RelativeDateResolver, TopicMapper
 
 
 def test_topic_mapper_returns_canonical_topic() -> None:

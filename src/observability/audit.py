@@ -1,4 +1,14 @@
-def record_artifact_status(session_id: str, status: dict) -> None:
-    # Stub: metadata-only audit records (no raw user text).
-    _ = (session_id, status)
+"""Re-export from canonical Phase 4 package."""
+from phase4.observability.audit import (  # noqa: F401
+    AuditRecord,
+    clear_audit_records,
+    get_audit_records,
+    record_artifact_status,
+)
 
+__all__ = [
+    "AuditRecord",
+    "clear_audit_records",
+    "get_audit_records",
+    "record_artifact_status",
+]

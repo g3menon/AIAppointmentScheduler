@@ -1,5 +1,5 @@
+from phase3.integrations.fakes import FakeGoogleMcpClient
 from src.integrations.google_mcp.booking_mcp_executor import BookingMcpBundle, run_booking_mcp_triplet
-from src.integrations.google_mcp.fakes import FakeGoogleMcpClient
 from src.integrations.google_mcp.mcp_tool_dispatch import _IDEMPOTENT_RESULTS
 from src.integrations.google_mcp.settings import GoogleMcpSettings
 

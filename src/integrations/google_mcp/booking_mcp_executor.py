@@ -40,6 +40,16 @@ class BookingMcpResult:
     draft_id: str
 
 
+@dataclass(frozen=True)
+class BookingMcpExecutionError(RuntimeError):
+    stage: str
+    artifact_status: dict[str, str]
+    cause: str
+
+    def __str__(self) -> str:
+        return f"MCP execution failed at {self.stage}: {self.cause}"
+
+
 def _use_llm_mcp_path() -> bool:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return False
@@ -58,39 +68,74 @@ def run_booking_mcp_triplet(client: McpOperations, bundle: BookingMcpBundle) -> 
 
 
 def _run_direct(client: McpOperations, bundle: BookingMcpBundle) -> BookingMcpResult:
-    event_id = dispatch_mcp_tool(
-        client,
-        "calendar_create_hold",
-        {
-            "title": bundle.calendar_title,
-            "start_utc": bundle.start_utc,
-            "end_utc": bundle.end_utc,
-            "calendar_id": bundle.calendar_id,
-            "idempotency_key": bundle.calendar_idempotency_key,
-        },
-    )
-    doc_reply = dispatch_mcp_tool(
-        client,
-        "docs_append_prebooking",
-        {
-            "doc_id": bundle.doc_id,
-            "line": bundle.doc_line,
-            "idempotency_key": bundle.doc_idempotency_key,
-        },
-    )
-    draft_id = dispatch_mcp_tool(
-        client,
-        "gmail_create_draft",
-        {
-            "to": bundle.gmail_to,
-            "subject": bundle.gmail_subject,
-            "body_markdown": bundle.gmail_body,
-        },
-    )
+    status = {"calendar": "pending", "docs": "pending", "gmail": "pending"}
+    event_id = ""
+    doc_reply = ""
+    draft_id = ""
+
+    try:
+        event_id = str(
+            dispatch_mcp_tool(
+                client,
+                "calendar_create_hold",
+                {
+                    "title": bundle.calendar_title,
+                    "start_utc": bundle.start_utc,
+                    "end_utc": bundle.end_utc,
+                    "calendar_id": bundle.calendar_id,
+                    "idempotency_key": bundle.calendar_idempotency_key,
+                },
+            )
+            or ""
+        )
+        status["calendar"] = "success"
+    except Exception as exc:
+        status["calendar"] = "failed"
+        status["docs"] = "skipped"
+        status["gmail"] = "skipped"
+        raise BookingMcpExecutionError(stage="calendar", artifact_status=status, cause=str(exc))
+
+    try:
+        doc_reply = str(
+            dispatch_mcp_tool(
+                client,
+                "docs_append_prebooking",
+                {
+                    "doc_id": bundle.doc_id,
+                    "line": bundle.doc_line,
+                    "idempotency_key": bundle.doc_idempotency_key,
+                },
+            )
+            or ""
+        )
+        status["docs"] = "success"
+    except Exception as exc:
+        status["docs"] = "failed"
+        status["gmail"] = "skipped"
+        raise BookingMcpExecutionError(stage="docs", artifact_status=status, cause=str(exc))
+
+    try:
+        draft_id = str(
+            dispatch_mcp_tool(
+                client,
+                "gmail_create_draft",
+                {
+                    "to": bundle.gmail_to,
+                    "subject": bundle.gmail_subject,
+                    "body_markdown": bundle.gmail_body,
+                },
+            )
+            or ""
+        )
+        status["gmail"] = "success"
+    except Exception as exc:
+        status["gmail"] = "failed"
+        raise BookingMcpExecutionError(stage="gmail", artifact_status=status, cause=str(exc))
+
     return BookingMcpResult(
-        event_id=str(event_id or ""),
-        doc_reply=str(doc_reply or ""),
-        draft_id=str(draft_id or ""),
+        event_id=event_id,
+        doc_reply=doc_reply,
+        draft_id=draft_id,
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 
 from phase1.domain.calendar_service import MockCalendarService
@@ -13,8 +14,15 @@ from phase1.session.session_context import SessionContext
 from phase1.session.state import State
 from phase1.session.topic_catalog import resolve_topic
 from src.domain.calendar_service import BookingDomainService, DomainValidationError
-from src.integrations.google_mcp.booking_mcp_executor import BookingMcpBundle, run_booking_mcp_triplet
+from src.integrations.google_mcp.booking_mcp_executor import (
+    BookingMcpBundle,
+    BookingMcpExecutionError,
+    run_booking_mcp_triplet,
+)
 from src.integrations.google_mcp.client import GoogleMcpClient
+from src.observability.audit import record_artifact_status
+from src.observability.logger import log_event
+from src.session.orchestrator import build_recovery_plan
 
 
 def _default_mcp_client():
@@ -52,19 +60,29 @@ class Orchestrator:
         return self._mcp
 
     def handle(self, user_text: str, session: SessionContext) -> AgentTurn:
+        start = time.perf_counter()
         text = (user_text or "").strip()
         lower = text.lower()
         session.turn_count += 1
 
+        error_type = "none"
         if contains_pii(text):
-            return AgentTurn(messages=[T.PII_REJECTION])
+            turn = AgentTurn(messages=[T.PII_REJECTION])
+            self._log_turn(session, error_type, start)
+            return turn
 
         if "investment advice" in lower:
             session.advice_redirect_count += 1
-            return AgentTurn(messages=[T.INVESTMENT_ADVICE_REFUSAL])
+            turn = AgentTurn(messages=[T.INVESTMENT_ADVICE_REFUSAL])
+            self._log_turn(session, error_type, start)
+            return turn
 
         handler = _STATE_HANDLERS.get(session.state, _handle_closed)
-        return handler(self, text, lower, session)
+        turn = handler(self, text, lower, session)
+        if session.last_mcp_error:
+            error_type = session.last_mcp_error
+        self._log_turn(session, error_type, start)
+        return turn
 
     @staticmethod
     def _detect_intent(text: str) -> Intent:
@@ -87,6 +105,21 @@ class Orchestrator:
         if "2" in text:
             return 1
         return None
+
+    @staticmethod
+    def _log_turn(session: SessionContext, error_type: str, start: float) -> None:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "orchestrator_turn",
+            {
+                "session_id": session.session_id,
+                "stage": session.state.value,
+                "intent": session.intent or "unknown",
+                "booking_code": session.booking_code or "",
+                "error_type": error_type,
+                "latency_ms": latency_ms,
+            },
+        )
 
 
 def _handle_greet(_orch: Orchestrator, _text: str, _lower: str, session: SessionContext) -> AgentTurn:
@@ -233,10 +266,26 @@ def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> A
         mcp_result = run_booking_mcp_triplet(orch.mcp, bundle)
         event_id = mcp_result.event_id
         draft_id = mcp_result.draft_id
-    except Exception:
+    except BookingMcpExecutionError as exc:
+        session.last_mcp_error = "integration"
+        record_artifact_status(
+            session.session_id,
+            {
+                "booking_code": code,
+                "calendar_status": exc.artifact_status.get("calendar", "unknown"),
+                "docs_status": exc.artifact_status.get("docs", "unknown"),
+                "gmail_status": exc.artifact_status.get("gmail", "unknown"),
+                "failure_stage": exc.stage,
+            },
+        )
         session.booking_code = None
         session.state = State.CLOSE
-        return AgentTurn(messages=[T.mcp_booking_failed_message()])
+        return AgentTurn(messages=[build_recovery_plan(exc).fallback_message])
+    except Exception as exc:
+        session.last_mcp_error = "system"
+        session.booking_code = None
+        session.state = State.CLOSE
+        return AgentTurn(messages=[build_recovery_plan(exc).fallback_message])
 
     session.state = State.CLOSE
     return AgentTurn(
