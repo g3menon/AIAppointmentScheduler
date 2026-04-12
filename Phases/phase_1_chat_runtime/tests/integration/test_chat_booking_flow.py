@@ -90,16 +90,10 @@ def test_mcp_write_counts_by_intent() -> None:
 
 def test_booking_slot_accepts_full_slot_text_choice() -> None:
     orch, s = Orchestrator(), SessionContext(session_id="slot-full-text")
-    turns = _run(
-        orch,
-        s,
-        "hi",
-        "ok",
-        "book appointment",
-        "KYC / Onboarding",
-        "tomorrow afternoon",
-        "Friday, 10 April 2026, 4:30 PM IST",
-    )
+    _run(orch, s, "hi", "ok", "book appointment", "KYC / Onboarding", "tomorrow afternoon")
+    assert s.state == State.BOOK_OFFER_SLOTS
+    second_slot_label = s.offered_slots[1]
+    turns = _run(orch, s, second_slot_label)
     assert s.state == State.BOOK_CONFIRM
-    assert s.selected_slot == "Friday, 10 April 2026, 4:30 PM IST"
-    assert any("4:30 PM IST" in msg for msg in turns[-1]["messages"])
+    assert s.selected_slot == second_slot_label
+    assert any(second_slot_label in msg for msg in turns[-1]["messages"])

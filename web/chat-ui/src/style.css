@@ -547,17 +547,37 @@ body {
   transition:
     transform 0.12s ease,
     box-shadow 0.12s ease,
-    border-color 0.12s;
+    border-color 0.12s,
+    background 0.15s;
 }
 
 .voice-btn--mic:hover {
   border-color: var(--accent);
 }
 
+.voice-btn--mic.voice-btn--on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.voice-btn--mic.voice-btn--on .voice-icon.mic::after {
+  background: var(--accent);
+}
+
 .voice-bar--active .voice-btn--mic {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-  transform: scale(1.02);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  transform: scale(1.04);
+}
+
+.voice-bar--active .voice-btn--mic .voice-icon.mic::after {
+  background: #fff;
+}
+
+.voice-bar--active .voice-btn--mic .voice-label {
+  color: #fff;
 }
 
 .voice-btn:not(.voice-btn--mic):disabled {

@@ -1,7 +1,6 @@
 import "./style.css";
 
 const API_BASE = import.meta.env.VITE_CHAT_API_URL || "";
-/** Set VITE_USE_WEB_SPEECH=false to disable browser speech recognition on the mic. */
 const USE_WEB_SPEECH = import.meta.env.VITE_USE_WEB_SPEECH !== "false";
 const SPEECH_LANG = import.meta.env.VITE_SPEECH_LANG || "en-IN";
 
@@ -33,7 +32,7 @@ app.innerHTML = `
       <div class="starter-panel__head">
         <span class="starter-panel__kicker">Get started</span>
         <h2 class="starter-panel__title">What would you like to do?</h2>
-        <p class="starter-panel__hint">Tap a button below — if the disclaimer is still pending, we acknowledge it for you automatically.</p>
+        <p class="starter-panel__hint">Tap a button or use the mic to choose an option.</p>
       </div>
       <div class="chip-grid" id="intent-preview"></div>
     </section>
@@ -46,7 +45,7 @@ app.innerHTML = `
           type="button"
           class="voice-btn voice-btn--mic"
           id="btn-mic"
-          title="Hold to speak (browser speech recognition). Release to send."
+          title="Tap to start/stop voice mode"
           aria-pressed="false"
         >
           <span class="voice-icon mic" aria-hidden="true"></span>
@@ -55,11 +54,11 @@ app.innerHTML = `
         <div class="waveform" id="waveform" aria-hidden="true" data-voice-idle="true">
           <span></span><span></span><span></span><span></span><span></span>
         </div>
-        <button type="button" class="voice-btn" id="btn-speaker" disabled title="Playback after Phase 6 TTS">
+        <button type="button" class="voice-btn" id="btn-speaker" disabled title="Replay last response">
           <span class="voice-icon speaker" aria-hidden="true"></span>
           <span class="voice-label">Play</span>
         </button>
-        <span class="voice-phase-tag" id="voice-status">Hold mic to speak · release to send</span>
+        <span class="voice-phase-tag" id="voice-status">Tap mic to start voice mode</span>
       </div>
 
       <div class="composer__row">
@@ -316,158 +315,70 @@ async function apiPostTracked(text) {
   }
 }
 
-function setVoiceListening(active, statusText) {
+/* ─── Voice mode state ─────────────────────────────────────────────── */
+let voiceModeOn = false;
+let lastInputWasVoice = false;
+let speechRecognition = null;
+let speechSessionActive = false;
+let lastSpokenMessages = [];
+
+const btnSpeaker = document.getElementById("btn-speaker");
+
+function setVoiceVisual(listening, statusText) {
   if (!voiceBar || !waveformEl || !btnMic || !voiceStatusEl) return;
-  voiceBar.classList.toggle("voice-bar--active", active);
-  if (active) {
+  voiceBar.classList.toggle("voice-bar--active", listening);
+  btnMic.classList.toggle("voice-btn--on", voiceModeOn);
+  if (listening) {
     waveformEl.removeAttribute("data-voice-idle");
   } else {
     waveformEl.setAttribute("data-voice-idle", "true");
   }
-  btnMic.setAttribute("aria-pressed", active ? "true" : "false");
+  btnMic.setAttribute("aria-pressed", voiceModeOn ? "true" : "false");
   if (statusText != null) {
     voiceStatusEl.textContent = statusText;
     return;
   }
-  voiceStatusEl.textContent = active
-    ? "Listening… release when done"
-    : "Hold mic to speak · release to send";
+  if (listening) {
+    voiceStatusEl.textContent = "Listening… speak now";
+  } else if (voiceModeOn) {
+    voiceStatusEl.textContent = "Voice mode on · waiting…";
+  } else {
+    voiceStatusEl.textContent = "Tap mic to start voice mode";
+  }
 }
 
-/** Web Speech API (Chrome/Edge). Sends transcript to the same chat API as typing. */
 function createSpeechRecognition() {
   const Ctor = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
   if (!Ctor) return null;
   const r = new Ctor();
   r.lang = SPEECH_LANG;
-  r.continuous = true;
-  r.interimResults = true;
+  r.continuous = false;
+  r.interimResults = false;
   r.maxAlternatives = 1;
   return r;
 }
 
-let speechRecognition = null;
-let speechFinalChunks = [];
-let speechSessionActive = false;
+let ttsKeepAlive = null;
 
-function bindVoiceMic() {
-  if (!btnMic) return;
-
-  const releaseCapture = (e) => {
-    try {
-      if (e?.pointerId != null && btnMic.hasPointerCapture(e.pointerId)) {
-        btnMic.releasePointerCapture(e.pointerId);
-      }
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const stopVisualOnly = (e) => {
-    setVoiceListening(false);
-    releaseCapture(e);
-  };
-
-  const onPointerUp = (e) => {
-    if (!USE_WEB_SPEECH) {
-      stopVisualOnly(e);
-      return;
-    }
-    releaseCapture(e);
-    if (speechRecognition && speechSessionActive) {
-      try {
-        speechRecognition.stop();
-      } catch {
-        /* ignore */
-      }
-    } else {
-      setVoiceListening(false);
-    }
-  };
-
-  btnMic.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 && e.pointerType === "mouse") return;
-    if (inputEl.disabled || sending) return;
-    e.preventDefault();
-    try {
-      btnMic.setPointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-
-    if (!USE_WEB_SPEECH) {
-      setVoiceListening(false, "Voice input is off (remove VITE_USE_WEB_SPEECH=false to enable)");
-      return;
-    }
-
-    if (!speechRecognition) {
-      speechRecognition = createSpeechRecognition();
-    }
-    if (!speechRecognition) {
-      setVoiceListening(
-        false,
-        "Voice not supported here — use Chrome or Edge, or type your message",
-      );
-      return;
-    }
-
-    speechFinalChunks = [];
-    speechRecognition.onresult = (ev) => {
-      for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
-        if (ev.results[i].isFinal) {
-          const t = ev.results[i][0].transcript.trim();
-          if (t) speechFinalChunks.push(t);
-        }
-      }
-    };
-    speechRecognition.onerror = (ev) => {
-      if (ev.error === "aborted") return;
-      const msg =
-        ev.error === "not-allowed"
-          ? "Microphone blocked — allow access in the browser address bar"
-          : `Voice error: ${ev.error}`;
-      setVoiceListening(false, msg);
-      speechSessionActive = false;
-    };
-    speechRecognition.onend = () => {
-      speechSessionActive = false;
-      setVoiceListening(false);
-      const text = speechFinalChunks.join(" ").trim();
-      speechFinalChunks = [];
-      if (text && !sending && !inputEl.disabled) {
-        sendToApi(text, { userBubble: true, userLabel: text, fromVoice: true });
-      }
-    };
-
-    try {
-      speechRecognition.start();
-      speechSessionActive = true;
-      setVoiceListening(true, "Listening… release when done");
-    } catch {
-      setVoiceListening(false, "Could not start microphone — try again");
-      speechSessionActive = false;
-    }
-  });
-
-  btnMic.addEventListener("pointerup", onPointerUp);
-  btnMic.addEventListener("pointercancel", onPointerUp);
-  btnMic.addEventListener("lostpointercapture", () => {
-    if (!speechSessionActive) setVoiceListening(false);
-  });
+function stopSpeaking() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  if (ttsKeepAlive) { clearInterval(ttsKeepAlive); ttsKeepAlive = null; }
 }
 
-bindVoiceMic();
-
-/** Phase 6: call `window.__advisorVoice?.setListening(true)` while STT is active. */
-if (typeof window !== "undefined") {
-  window.__advisorVoice = { setListening: setVoiceListening };
+function startTtsKeepAlive() {
+  if (ttsKeepAlive) clearInterval(ttsKeepAlive);
+  ttsKeepAlive = setInterval(() => {
+    if (!window.speechSynthesis.speaking) {
+      clearInterval(ttsKeepAlive);
+      ttsKeepAlive = null;
+      return;
+    }
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+  }, 10000);
 }
 
-let lastInputWasVoice = false;
-const btnSpeaker = document.getElementById("btn-speaker");
-
-function speakText(text) {
-  if (!("speechSynthesis" in window)) return;
+function makeUtterance(text) {
   const cleaned = text
     .replace(/\n/g, ". ")
     .replace(/https?:\/\/\S+/g, "link")
@@ -475,70 +386,216 @@ function speakText(text) {
   const utt = new SpeechSynthesisUtterance(cleaned);
   utt.lang = SPEECH_LANG;
   utt.rate = 1.0;
-  window.speechSynthesis.speak(utt);
+  return utt;
 }
 
-function speakMessages(messages) {
-  if (!messages || !messages.length) return;
-  if (!("speechSynthesis" in window)) return;
+function speakMessages(messages, onDone) {
+  if (!messages || !messages.length) { onDone?.(); return; }
+  if (!("speechSynthesis" in window)) { onDone?.(); return; }
+
   window.speechSynthesis.cancel();
-  messages.forEach((text) => speakText(text));
+
+  let callbackFired = false;
+  const finish = () => {
+    if (callbackFired) return;
+    callbackFired = true;
+    onDone?.();
+  };
+
+  setTimeout(() => {
+    if (callbackFired) return;
+    messages.forEach((text, i) => {
+      const utt = makeUtterance(text);
+      if (i === messages.length - 1) {
+        utt.onend = finish;
+        utt.onerror = finish;
+      }
+      window.speechSynthesis.speak(utt);
+    });
+    startTtsKeepAlive();
+    setTimeout(finish, messages.join(" ").length * 85 + 5000);
+  }, 150);
 }
 
-function stopSpeaking() {
-  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+function startListeningRound() {
+  if (!voiceModeOn || speechSessionActive || sending) return;
+  if (inputEl.disabled) {
+    setVoiceVisual(false, "Voice mode on · session complete");
+    return;
+  }
+
+  speechRecognition = createSpeechRecognition();
+  if (!speechRecognition) {
+    setVoiceVisual(false, "Voice not supported — use Chrome or Edge");
+    voiceModeOn = false;
+    return;
+  }
+
+  let capturedText = "";
+
+  speechRecognition.onresult = (ev) => {
+    stopSpeaking();
+    for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+      const t = ev.results[i][0].transcript.trim();
+      if (t) capturedText = t;
+    }
+  };
+
+  speechRecognition.onerror = (ev) => {
+    speechSessionActive = false;
+    if (ev.error === "aborted") return;
+    if (ev.error === "no-speech") {
+      if (voiceModeOn && !inputEl.disabled) {
+        setTimeout(() => startListeningRound(), 200);
+      }
+      return;
+    }
+    if (ev.error === "not-allowed") {
+      setVoiceVisual(false, "Microphone blocked — allow access in browser settings");
+      voiceModeOn = false;
+      return;
+    }
+    setVoiceVisual(false, `Voice error: ${ev.error}`);
+    voiceModeOn = false;
+  };
+
+  speechRecognition.onend = () => {
+    speechSessionActive = false;
+
+    if (!voiceModeOn) {
+      setVoiceVisual(false);
+      return;
+    }
+
+    if (capturedText && !sending && !inputEl.disabled) {
+      setVoiceVisual(false, "Processing…");
+      sendToApi(capturedText, { userBubble: true, userLabel: capturedText, fromVoice: true });
+    } else if (voiceModeOn && !inputEl.disabled) {
+      setTimeout(() => startListeningRound(), 200);
+    } else {
+      setVoiceVisual(false);
+    }
+  };
+
+  try {
+    speechRecognition.start();
+    speechSessionActive = true;
+    setVoiceVisual(true);
+  } catch (err) {
+    speechSessionActive = false;
+    setTimeout(() => {
+      if (voiceModeOn) startListeningRound();
+    }, 500);
+  }
+}
+
+function enableVoiceMode() {
+  voiceModeOn = true;
+  lastInputWasVoice = true;
+  stopSpeaking();
+  setVoiceVisual(false);
+  startListeningRound();
+}
+
+function disableVoiceMode() {
+  voiceModeOn = false;
+  lastInputWasVoice = false;
+  stopSpeaking();
+  if (speechRecognition && speechSessionActive) {
+    try { speechRecognition.abort(); } catch { /* ignore */ }
+  }
+  speechSessionActive = false;
+  speechRecognition = null;
+  setVoiceVisual(false);
+}
+
+function resumeListeningAfterResponse() {
+  if (voiceModeOn && !inputEl.disabled) {
+    setTimeout(() => startListeningRound(), 300);
+  }
+}
+
+if (btnMic) {
+  btnMic.addEventListener("click", () => {
+    if (!USE_WEB_SPEECH) {
+      setVoiceVisual(false, "Voice is off (set VITE_USE_WEB_SPEECH=true to enable)");
+      return;
+    }
+    if (voiceModeOn) {
+      disableVoiceMode();
+    } else {
+      enableVoiceMode();
+    }
+  });
 }
 
 if (btnSpeaker) {
   btnSpeaker.disabled = false;
   btnSpeaker.title = "Tap to replay last response aloud";
-  let lastSpoken = [];
-  const origAppend = null;
   btnSpeaker.addEventListener("click", () => {
-    if (lastSpoken.length) speakMessages(lastSpoken);
+    if (lastSpokenMessages.length) speakMessages(lastSpokenMessages);
   });
-  window.__advisorVoice.setLastSpoken = (msgs) => { lastSpoken = msgs || []; };
 }
 
-function appendAssistantStagger(messages, speakAloud = false) {
-  (messages || []).forEach((text, i) => {
+if (typeof window !== "undefined") {
+  window.__advisorVoice = { setListening: setVoiceVisual };
+}
+
+/* ─── Message display + TTS ────────────────────────────────────────── */
+
+function shouldSuppressTextBubble(text, quickReplies) {
+  if (!quickReplies || quickReplies.length === 0) return false;
+  const labels = quickReplies.map((r) => r.label.toLowerCase());
+  const lines = text.split("\n").map((l) => l.replace(/^[-·•\d)]+\s*/, "").trim().toLowerCase()).filter(Boolean);
+  if (lines.length < 2) return false;
+  const matchCount = lines.filter((line) => labels.some((lbl) => lbl.includes(line) || line.includes(lbl))).length;
+  return matchCount >= labels.length * 0.5;
+}
+
+function appendAssistantStagger(messages, speakAloud = false, quickReplies = []) {
+  const filtered = (messages || []).filter((text) => !shouldSuppressTextBubble(text, quickReplies));
+  filtered.forEach((text, i) => {
     window.setTimeout(() => addBubble(text, "assistant", i), i * 70);
   });
-  if (speakAloud && messages?.length) {
-    const delay = Math.max(0, (messages.length - 1) * 70 + 50);
-    window.setTimeout(() => speakMessages(messages), delay);
-  }
-  if (window.__advisorVoice?.setLastSpoken) {
-    window.__advisorVoice.setLastSpoken(messages);
+  const toSpeak = messages || [];
+  lastSpokenMessages = toSpeak;
+  if (speakAloud && toSpeak.length) {
+    const delay = Math.max(0, (filtered.length - 1) * 70 + 50);
+    window.setTimeout(() => speakMessages(toSpeak, resumeListeningAfterResponse), delay);
+  } else {
+    resumeListeningAfterResponse();
   }
 }
 
-async function sendToApi(text, { userBubble = true, userLabel, fromVoice = false } = {}) {
+async function sendToApi(text, { userBubble = true, userLabel, fromVoice = false, fromTyping = false } = {}) {
   if (sending) return;
   sending = true;
   sendBtn.disabled = true;
-  const shouldSpeak = fromVoice || lastInputWasVoice;
-  lastInputWasVoice = fromVoice;
+  if (fromVoice) lastInputWasVoice = true;
+  if (fromTyping) { lastInputWasVoice = false; disableVoiceMode(); }
+  const shouldSpeak = lastInputWasVoice;
   try {
     if (userBubble) {
       addBubble(userLabel || text, "user", 0);
     }
     const data = await apiPostTracked(text);
     applyChrome(data);
-    appendAssistantStagger(data.messages, shouldSpeak);
+    appendAssistantStagger(data.messages, shouldSpeak, data.quick_replies);
     scheduleCompletionIfNeeded(data);
   } catch {
     addBubble("Could not reach the server. Is the API running on port 8000?", "system", 0);
+    resumeListeningAfterResponse();
   } finally {
     sending = false;
     if (!inputEl.disabled) sendBtn.disabled = false;
-    if (!inputEl.disabled) inputEl.focus();
+    if (!inputEl.disabled && !voiceModeOn) inputEl.focus();
   }
 }
 
 async function onQuickReply(item) {
   if (item.action === "new_session") {
     stopSpeaking();
+    disableVoiceMode();
     resetChat();
     return;
   }
@@ -550,23 +607,24 @@ async function onIntentPreview(item) {
   if (lastSession && !lastSession.disclaimer_acknowledged) {
     sending = true;
     sendBtn.disabled = true;
+    const speak = lastInputWasVoice;
     try {
       const ack = await apiPostTracked("ok");
       applyChrome(ack);
-      appendAssistantStagger(ack.messages);
+      appendAssistantStagger(ack.messages, speak, ack.quick_replies);
       scheduleCompletionIfNeeded(ack);
       await new Promise((r) => setTimeout(r, (ack.messages?.length || 0) * 70 + 40));
       const data = await apiPostTracked(item.value);
       addBubble(item.label, "user", 0);
       applyChrome(data);
-      appendAssistantStagger(data.messages);
+      appendAssistantStagger(data.messages, speak, data.quick_replies);
       scheduleCompletionIfNeeded(data);
     } catch {
       addBubble("Could not reach the server.", "system", 0);
     } finally {
       sending = false;
       sendBtn.disabled = inputEl.disabled;
-      if (!inputEl.disabled) inputEl.focus();
+      if (!inputEl.disabled && !voiceModeOn) inputEl.focus();
     }
     return;
   }
@@ -580,26 +638,28 @@ async function bootstrap() {
   try {
     const data = await apiPostTracked("hello");
     applyChrome(data);
-    appendAssistantStagger(data.messages);
+    appendAssistantStagger(data.messages, false, data.quick_replies);
     scheduleCompletionIfNeeded(data);
   } catch {
     addBubble("Could not reach the server. Start the API: uvicorn src.api.http.chat_app:app --port 8000", "system", 0);
   } finally {
     sending = false;
     sendBtn.disabled = inputEl.disabled;
-    inputEl.focus();
+    if (!voiceModeOn) inputEl.focus();
   }
 }
 
 function resetChat() {
   sessionId = `web-${crypto.randomUUID().slice(0, 8)}`;
   lastSession = null;
+  lastInputWasVoice = false;
   messagesEl.innerHTML = "";
   clearQuickReplies();
   starterPanel.hidden = true;
   intentPreviewEl.innerHTML = "";
   inputEl.disabled = false;
   sendBtn.disabled = false;
+  disableVoiceMode();
   updateSessionPill();
   bootstrap();
 }
@@ -608,7 +668,7 @@ sendBtn.addEventListener("click", () => {
   const text = inputEl.value.trim();
   if (!text || sending || inputEl.disabled) return;
   inputEl.value = "";
-  sendToApi(text, { userBubble: true });
+  sendToApi(text, { userBubble: true, fromTyping: true });
 });
 
 inputEl.addEventListener("keydown", (e) => {

@@ -106,9 +106,16 @@ class Orchestrator:
 
     @staticmethod
     def _parse_slot_choice(text: str) -> int | None:
-        if re.fullmatch(r"\s*(?:option\s*)?1\s*\)?\s*", text):
+        t = text.strip().lower().rstrip(".").strip()
+        _SLOT_1 = re.compile(
+            r"^(?:option\s*)?(?:1|one|first|slot\s*1|the\s*first(?:\s*one)?)\.?\s*\)?\s*$"
+        )
+        _SLOT_2 = re.compile(
+            r"^(?:option\s*)?(?:2|two|second|slot\s*2|the\s*second(?:\s*one)?)\.?\s*\)?\s*$"
+        )
+        if _SLOT_1.match(t):
             return 0
-        if re.fullmatch(r"\s*(?:option\s*)?2\s*\)?\s*", text):
+        if _SLOT_2.match(t):
             return 1
         return None
 
@@ -133,8 +140,14 @@ def _handle_greet(_orch: Orchestrator, _text: str, _lower: str, session: Session
     return AgentTurn(messages=[T.GREETING, T.DISCLAIMER])
 
 
-def _handle_disclaimer(_orch: Orchestrator, _text: str, _lower: str, session: SessionContext) -> AgentTurn:
+def _handle_disclaimer(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
     session.disclaimer_acknowledged = True
+
+    detected = orch._detect_intent(lower)
+    if detected != Intent.UNKNOWN:
+        session.state = State.INTENT_ROUTING
+        return _handle_intent_routing(orch, _text, lower, session)
+
     session.state = State.INTENT_ROUTING
     return AgentTurn(messages=[T.INTENT_PROMPT])
 
@@ -212,15 +225,40 @@ def _handle_book_time_preference(orch: Orchestrator, text: str, _lower: str, ses
     )
 
 
+def _normalize_for_match(text: str) -> list[str]:
+    """Strip punctuation and collapse whitespace for fuzzy slot comparison."""
+    return re.sub(r"[^a-z0-9 ]", " ", text.strip().lower()).split()
+
+
+def _slots_match_score(spoken: str, offered: str) -> float:
+    spoken_words = _normalize_for_match(spoken)
+    offered_words = _normalize_for_match(offered)
+    if not spoken_words or not offered_words:
+        return 0.0
+    matches = sum(1 for w in offered_words if w in spoken_words)
+    return matches / len(offered_words)
+
+
+def _best_slot_match(text: str, offered_slots: list[str]) -> int | None:
+    """Return the index of the best-matching slot, or None if no good match."""
+    best_idx = None
+    best_score = 0.0
+    for idx, offered in enumerate(offered_slots):
+        if text.strip().lower() == offered.lower():
+            return idx
+        score = _slots_match_score(text, offered)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+    return best_idx if best_score >= 0.6 else None
+
+
 def _handle_book_offer_slots(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
-    normalized = _text.strip().lower()
-    selection = None
-    for idx, offered in enumerate(session.offered_slots):
-        if normalized == offered.lower():
-            selection = idx
-            break
+    selection = orch._parse_slot_choice(lower)
+
     if selection is None:
-        selection = orch._parse_slot_choice(lower)
+        selection = _best_slot_match(_text, session.offered_slots)
+
     if selection is None:
         return AgentTurn(messages=[T.SLOT_INVALID_CHOICE])
 
@@ -322,11 +360,19 @@ def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> A
     )
 
 
+def _is_affirmative(lower: str) -> bool:
+    return any(w in lower for w in ("yes", "yeah", "yep", "yup", "sure", "confirm", "ok", "okay")) or lower == "y"
+
+
+def _is_negative(lower: str) -> bool:
+    return any(w in lower for w in ("no", "nope", "nah", "don't", "cancel")) or lower == "n"
+
+
 def _handle_book_confirm(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
-    if "yes" in lower or "confirm" in lower or "y" == lower:
+    if _is_affirmative(lower):
         return _execute_confirmed_booking(orch, session)
 
-    if "no" in lower or "n" == lower:
+    if _is_negative(lower):
         session.state = State.BOOK_OFFER_SLOTS
         return AgentTurn(
             messages=[
@@ -372,14 +418,11 @@ def _handle_reschedule_collect_code(orch: Orchestrator, text: str, _lower: str, 
 
 
 def _handle_reschedule_offer_slots(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
-    normalized = _text.strip().lower()
-    selection = None
-    for idx, offered in enumerate(session.offered_slots):
-        if normalized == offered.lower():
-            selection = idx
-            break
+    selection = orch._parse_slot_choice(lower)
+
     if selection is None:
-        selection = orch._parse_slot_choice(lower)
+        selection = _best_slot_match(_text, session.offered_slots)
+
     if selection is None:
         return AgentTurn(messages=[T.SLOT_INVALID_CHOICE])
 
@@ -393,7 +436,7 @@ def _handle_reschedule_offer_slots(orch: Orchestrator, _text: str, lower: str, s
 
 
 def _handle_reschedule_confirm(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
-    if "no" in lower or "n" == lower:
+    if _is_negative(lower):
         session.state = State.RESCHEDULE_OFFER_SLOTS
         return AgentTurn(
             messages=[
@@ -404,7 +447,7 @@ def _handle_reschedule_confirm(orch: Orchestrator, _text: str, lower: str, sessi
             ]
         )
 
-    if "yes" not in lower and "confirm" not in lower and lower != "y":
+    if not _is_affirmative(lower):
         return AgentTurn(messages=["Please reply with yes or no to confirm rescheduling."])
 
     return _execute_reschedule(orch, session)
@@ -505,11 +548,11 @@ def _handle_cancel_collect_code(orch: Orchestrator, text: str, _lower: str, sess
 
 
 def _handle_cancel_confirm(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
-    if "no" in lower or "n" == lower:
+    if _is_negative(lower):
         session.state = State.CLOSE
         return AgentTurn(messages=[T.CANCEL_ABORTED])
 
-    if "yes" not in lower and "confirm" not in lower and lower != "y":
+    if not _is_affirmative(lower):
         return AgentTurn(messages=["Please reply with yes or no to confirm cancellation."])
 
     return _execute_cancel(orch, session)

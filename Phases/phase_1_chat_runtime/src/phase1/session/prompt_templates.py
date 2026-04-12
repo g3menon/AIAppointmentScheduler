@@ -1,11 +1,18 @@
 """Canonical response templates for the conversation orchestrator."""
 
-GREETING = "Hello! I can help you with advisor appointments."
+GREETING = (
+    "Hello! I can help you with advisor appointments.\n"
+    "Note: this assistant is informational only and does not "
+    "provide investment advice. Please avoid sharing personal identifiers."
+)
 
 DISCLAIMER = (
-    "Before we proceed: this assistant is informational only and does not "
-    "provide investment advice. Please avoid sharing personal identifiers "
-    "such as phone numbers, email addresses, or account numbers."
+    "How can I help you today?\n"
+    "- Book a new appointment\n"
+    "- Reschedule an existing booking\n"
+    "- Cancel a booking\n"
+    "- What to prepare for your appointment\n"
+    "- Check advisor availability"
 )
 
 PII_REJECTION = (
