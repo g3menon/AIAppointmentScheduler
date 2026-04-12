@@ -2,7 +2,14 @@
 
 Use this with `.env.example` to create your local `.env` safely. The example file lists **every variable** and **where secrets come from**.
 
-## 1) Create your local `.env`
+## 1) Create your local `.env` (and optional Python venv)
+
+**Recommended:** use a project virtual environment so dependencies stay isolated:
+
+- **Windows (PowerShell):** `python -m venv .venv` then `.\.venv\Scripts\Activate.ps1`
+- **macOS / Linux:** `python3 -m venv .venv` then `source .venv/bin/activate`
+
+Then install packages with `python -m pip install --upgrade pip` and `python -m pip install -r requirements.txt`. If activation is blocked by execution policy on Windows, run commands with `.\.venv\Scripts\python.exe -m pip ...` instead.
 
 1. From the repository root, copy the template:
    - **Windows (PowerShell):** `Copy-Item .env.example .env`
@@ -59,10 +66,14 @@ If you temporarily use **rules-only** NLU (no provider calls), you can still kee
    - `GOOGLE_OAUTH_REFRESH_TOKEN`
 6. If you use a Web client, set `GOOGLE_OAUTH_REDIRECT_URI` to the exact redirect URI registered in the console.
 
-### 4.3 Service account (JSON file) — recommended
+### 4.3 Service account (JSON file) — recommended for local dev
 
 1. **IAM & Admin → Service accounts** — create a service account and a **JSON key**; download the file.
-2. Set `GOOGLE_AUTH_MODE=service_account` and `GOOGLE_SERVICE_ACCOUNT_FILE` to the **absolute path** of that JSON file.
+2. Set `GOOGLE_AUTH_MODE=service_account` and point at the key using **one** of (see `.env.example` for full order):
+   - `GOOGLE_SERVICE_ACCOUNT_FILE` — absolute path to the JSON file (typical local setup), or
+   - `GOOGLE_APPLICATION_CREDENTIALS` — same path, Google’s standard ADC variable, or
+   - `GOOGLE_SERVICE_ACCOUNT_JSON` — inline JSON string (CI / secret managers; treat as **secret**), or
+   - leave all unset and use **Application Default Credentials** (e.g. workload identity on GKE, or `gcloud auth application-default login`).
 3. **Share** the target calendar and the pre-booking Doc with the service account’s email (`client_email` in the JSON).
 4. **Gmail (drafts):** a service account has no consumer Gmail mailbox. With **Google Workspace**, enable **domain-wide delegation** for the service account, then in Admin Console authorize the OAuth client ID with the same scopes the app uses. Set `GOOGLE_DELEGATED_SUBJECT` to the Workspace user whose mailbox should receive drafts (typically matches the mailbox you use with `userId='me'` in the API). Without Workspace + delegation, use **OAuth** for Gmail instead.
 
@@ -72,15 +83,17 @@ If you temporarily use **rules-only** NLU (no provider calls), you can still kee
 - **Docs:** Open the pre-booking document; the ID is the long string in the URL between `/d/` and `/edit`.
 - **Advisor email:** `ADVISOR_EMAIL_TO` is the mailbox used for **draft** creation (design is draft-only, never auto-send).
 
-## 5) Voice (Phase 7+)
+## 5) Voice (Phase 7+ — Google Cloud STT / TTS)
 
-Only after chat phases are stable:
+Only after chat and secondary-intent phases are stable:
 
-- `ENABLE_VOICE_API=true`
-- `ENABLE_STT=true`
-- `ENABLE_TTS=true` (when your adapters are ready)
+- Set `ENABLE_VOICE_API=true`, `ENABLE_STT=true`, `ENABLE_TTS=true` when the HTTP voice bridge and adapters are implemented.
+- In **Google Cloud Console** for the same project (or the project you choose for voice): enable **Cloud Speech-to-Text API** and **Cloud Text-to-Speech API**.
+- Reuse **`GOOGLE_SERVICE_ACCOUNT_FILE`** (the JSON key path is the secret — do not commit it). Grant that service account **Speech Client** and **Cloud Text-to-Speech User** (or equivalent) roles.
+- Optional: set **`GOOGLE_APPLICATION_CREDENTIALS`** to the same JSON path if a library expects that variable instead of your custom loader.
+- Tune language, voice, encoding, and sample rate using the **Phase 7** block in `.env.example` (`GOOGLE_STT_*`, `GOOGLE_TTS_*`, `GOOGLE_CLOUD_PROJECT`).
 
-Keep PII flags as in §2: no raw transcript/audio storage unless explicitly approved.
+Keep PII flags as in §2: no raw transcript/audio storage unless explicitly approved (`PII_STORE_RAW_AUDIO=false`, `VOICE_STORE_RAW_AUDIO=false`).
 
 ## 6) PII safety checklist before any demo or prod run
 

@@ -56,13 +56,13 @@ def build_quick_replies(session: SessionContext) -> list[dict[str, Any]]:
     if st == State.BOOK_TIME_PREFERENCE:
         return [{"label": label, "value": value} for label, value in TIME_CHIPS]
 
-    if st == State.BOOK_OFFER_SLOTS and len(session.offered_slots) >= 2:
+    if st in (State.BOOK_OFFER_SLOTS, State.RESCHEDULE_OFFER_SLOTS) and len(session.offered_slots) >= 2:
         return [
             {"label": f"1 · {session.offered_slots[0]}", "value": "1"},
             {"label": f"2 · {session.offered_slots[1]}", "value": "2"},
         ]
 
-    if st == State.BOOK_CONFIRM:
+    if st in (State.BOOK_CONFIRM, State.RESCHEDULE_CONFIRM):
         return [
             {"label": "Yes, confirm", "value": "yes"},
             {"label": "No, pick another slot", "value": "no"},

@@ -147,30 +147,29 @@ def test_unknown_intent_reprompts() -> None:
 # ── reschedule intent (Phase 1 stub) ────────────────────────────────
 
 
-def test_reschedule_collects_code_then_closes() -> None:
+def test_reschedule_collects_code() -> None:
     orch, s = _fresh()
     orch.handle("hi", s)
     orch.handle("ok", s)
     orch.handle("reschedule my appointment", s)
     assert s.state == State.RESCHEDULE_COLLECT_CODE
-    orch.handle("AB-C123", s)
-    assert s.state == State.CLOSE
+    turn = orch.handle("AB-C123", s)
     assert s.pending_booking_code == "AB-C123"
+    assert any("could not find" in m.lower() for m in turn.messages)
 
 
-# ── cancel intent (Phase 1 stub) ────────────────────────────────────
+# ── cancel intent ────────────────────────────────────────────────────
 
 
-def test_cancel_collects_code_confirms_then_closes() -> None:
+def test_cancel_collects_code() -> None:
     orch, s = _fresh()
     orch.handle("hi", s)
     orch.handle("ok", s)
     orch.handle("cancel my booking", s)
     assert s.state == State.CANCEL_COLLECT_CODE
-    orch.handle("AB-C123", s)
-    assert s.state == State.CANCEL_CONFIRM
-    orch.handle("yes", s)
-    assert s.state == State.CLOSE
+    turn = orch.handle("AB-C123", s)
+    assert s.pending_booking_code == "AB-C123"
+    assert any("could not find" in m.lower() for m in turn.messages)
 
 
 # ── prepare intent ───────────────────────────────────────────────────
@@ -181,7 +180,7 @@ def test_prepare_intent_gives_guidance() -> None:
     orch.handle("hi", s)
     orch.handle("ok", s)
     turn = orch.handle("what should I prepare", s)
-    assert s.state == State.PREPARE_TOPIC_OR_GENERIC
+    assert s.state == State.CLOSE
     assert any("prepare" in m.lower() for m in turn.messages)
 
 
@@ -193,8 +192,8 @@ def test_availability_intent_responds() -> None:
     orch.handle("hi", s)
     orch.handle("ok", s)
     turn = orch.handle("check availability", s)
-    assert s.state == State.AVAILABILITY_QUERY
-    assert any("availability" in m.lower() for m in turn.messages)
+    assert s.state == State.CLOSE
+    assert any("slot" in m.lower() or "available" in m.lower() for m in turn.messages)
 
 
 # ── closed session ───────────────────────────────────────────────────

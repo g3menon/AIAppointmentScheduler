@@ -36,16 +36,28 @@ def test_booking_confirmation_uses_domain_command() -> None:
 
 
 def test_secondary_intents_delegate_to_domain() -> None:
-    orch = Orchestrator()
+    store = __import__("src.domain.booking_store", fromlist=["InMemoryBookingStore"]).InMemoryBookingStore()
+    domain = __import__("src.domain.calendar_service", fromlist=["BookingDomainService"]).BookingDomainService(store=store)
+    orch = Orchestrator(domain_service=domain)
+
+    s_book = SessionContext(session_id="phase2-book-for-secondary")
+    _run(orch, s_book, "hi", "ok", "book appointment", "KYC", "tomorrow afternoon", "1", "yes")
+    code = s_book.booking_code
+    assert code is not None
 
     s_reschedule = SessionContext(session_id="phase2-reschedule")
-    _run(orch, s_reschedule, "hi", "ok", "reschedule my appointment", "AB-C123")
+    _run(orch, s_reschedule, "hi", "ok", "reschedule my appointment", code, "1", "yes")
     assert s_reschedule.state == State.CLOSE
     assert orch.domain.last_command is not None
     assert orch.domain.last_command.action == BookingAction.RESCHEDULE
 
+    s_book2 = SessionContext(session_id="phase2-book-for-cancel")
+    _run(orch, s_book2, "hi", "ok", "book appointment", "SIP", "next week", "1", "yes")
+    code2 = s_book2.booking_code
+    assert code2 is not None
+
     s_cancel = SessionContext(session_id="phase2-cancel")
-    _run(orch, s_cancel, "hi", "ok", "cancel booking", "AB-C123")
-    assert s_cancel.state == State.CANCEL_CONFIRM
+    _run(orch, s_cancel, "hi", "ok", "cancel booking", code2, "yes")
+    assert s_cancel.state == State.CLOSE
     assert orch.domain.last_command is not None
     assert orch.domain.last_command.action == BookingAction.CANCEL

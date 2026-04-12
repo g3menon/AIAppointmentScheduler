@@ -47,6 +47,18 @@ def calendar_create_hold(
 
 
 @mcp.tool()
+def calendar_delete_hold(event_id: str, calendar_id: str) -> str:
+    return str(
+        dispatch_mcp_tool(
+            _get_client(),
+            "calendar_delete_hold",
+            {"event_id": event_id, "calendar_id": calendar_id},
+        )
+        or ""
+    )
+
+
+@mcp.tool()
 def docs_append_prebooking(doc_id: str, line: str, idempotency_key: str) -> str:
     return str(
         dispatch_mcp_tool(

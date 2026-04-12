@@ -1,5 +1,6 @@
 """Re-export from canonical Phase 3 package."""
 from phase3.integrations.contracts import (  # noqa: F401
+    CalendarDeleteRequest,
     CalendarHoldRequest,
     DocsAppendRequest,
     GmailDraftRequest,
@@ -9,6 +10,7 @@ from phase3.integrations.contracts import (  # noqa: F401
 )
 
 __all__ = [
+    "CalendarDeleteRequest",
     "CalendarHoldRequest",
     "DocsAppendRequest",
     "GmailDraftRequest",

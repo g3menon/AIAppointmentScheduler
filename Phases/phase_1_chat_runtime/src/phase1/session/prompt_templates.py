@@ -86,19 +86,53 @@ SECURE_LINK_TEMPLATE = (
 
 RESCHEDULE_COLLECT_CODE = "Please share your existing booking code to reschedule."
 
-RESCHEDULE_PHASE1_STUB = (
-    "Reschedule acknowledged. In Phase 1, this flow is conversational only. "
-    "Full reschedule with new slot offers will be available in a later phase."
+RESCHEDULE_NOT_FOUND = (
+    "I could not find an active booking with that code. "
+    "Please double-check your booking code and try again."
 )
+
+RESCHEDULE_OFFER_HEADER = "Here are two alternative slots in IST for your rescheduled appointment:"
+
+RESCHEDULE_SLOT_CONFIRM_PROMPT = "Please reply with 1 or 2 to select your new slot."
+
+
+def reschedule_confirmation_message(old_code: str, new_slot: str) -> str:
+    return (
+        f"You want to reschedule booking {old_code} to: {new_slot}. "
+        "Can you confirm? (yes/no)"
+    )
+
+
+def reschedule_confirmed_message(new_slot: str, new_code: str) -> str:
+    return (
+        f"Your appointment has been rescheduled to {new_slot}.\n"
+        f"New booking code: {new_code}.\n"
+        "The previous calendar hold has been removed and a new one created.\n"
+        "A reschedule note has been appended to the pre-booking log."
+    )
+
+
+RESCHEDULE_ABORTED = "Reschedule cancelled. Your original booking remains active."
 
 CANCEL_COLLECT_CODE = "Please share your booking code to cancel."
 
+CANCEL_NOT_FOUND = (
+    "I could not find an active booking with that code. "
+    "Please double-check your booking code and try again."
+)
+
 CANCEL_CONFIRM_PROMPT = "Are you sure you want to cancel booking {code}? (yes/no)"
 
-CANCEL_PHASE1_STUB = (
-    "Cancellation acknowledged. In Phase 1, this flow is conversational only. "
-    "Full cancellation with hold removal will be available in a later phase."
-)
+
+def cancel_confirmed_message(code: str) -> str:
+    return (
+        f"Booking {code} has been cancelled.\n"
+        "The calendar hold has been removed and a cancellation note "
+        "has been appended to the pre-booking log."
+    )
+
+
+CANCEL_ABORTED = "Cancellation aborted. Your booking remains active."
 
 PREPARE_GUIDANCE = (
     "To prepare for your advisor appointment:\n"
@@ -108,10 +142,59 @@ PREPARE_GUIDANCE = (
     "Please do not share personal identifiers during the call."
 )
 
+PREPARE_TOPIC_GUIDANCE = {
+    "KYC/Onboarding": (
+        "For your KYC / Onboarding appointment:\n"
+        "- Keep a valid ID proof reference handy (do NOT share the number here)\n"
+        "- Have your basic account preferences noted\n"
+        "- Prepare questions about the onboarding process"
+    ),
+    "SIP/Mandates": (
+        "For your SIP / Mandates appointment:\n"
+        "- Know the fund categories you are interested in\n"
+        "- Note your preferred SIP amount range and tenure\n"
+        "- Prepare questions about mandate setup or modification"
+    ),
+    "Statements/Tax Docs": (
+        "For your Statements / Tax Docs appointment:\n"
+        "- Note the financial year or period you need statements for\n"
+        "- Have any prior statement references ready\n"
+        "- Prepare questions about capital gains or tax implications"
+    ),
+    "Withdrawals & Timelines": (
+        "For your Withdrawals & Timelines appointment:\n"
+        "- Know which holdings you want to discuss\n"
+        "- Note the approximate amounts and timelines\n"
+        "- Prepare questions about exit loads or settlement periods"
+    ),
+    "Account Changes/Nominee": (
+        "For your Account Changes / Nominee appointment:\n"
+        "- Know what changes you need (nominee, contact, bank details)\n"
+        "- Have the relevant form names or references ready\n"
+        "- Prepare questions about the update process and timelines"
+    ),
+}
+
 AVAILABILITY_RESPONSE = (
     "Advisor availability is generally open during weekdays (IST business hours). "
     "To see exact available slots, please proceed with booking a new appointment."
 )
+
+
+def availability_slots_message(slots: list[str]) -> str:
+    if not slots:
+        return (
+            "No advisor slots are currently available. "
+            "Would you like to book an appointment? I can add you to the waitlist."
+        )
+    lines = ["Here are the currently available advisor slots (IST):"]
+    for i, label in enumerate(slots, 1):
+        lines.append(f"{i}) {label}")
+    lines.append(
+        "\nThese are for informational purposes only. "
+        "To reserve a slot, please say 'book appointment'."
+    )
+    return "\n".join(lines)
 
 SESSION_COMPLETE = "This session is complete. Start a new session for another request."
 

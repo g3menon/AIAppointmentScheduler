@@ -51,3 +51,5 @@ class BookingRecord:
     slot: TimeSlot
     created_at_utc: str
     status: str
+    event_id: str = ""
+    draft_id: str = ""

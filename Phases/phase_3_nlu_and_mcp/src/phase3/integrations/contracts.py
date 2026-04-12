@@ -32,6 +32,18 @@ class CalendarHoldRequest:
 
 
 @dataclass(frozen=True)
+class CalendarDeleteRequest:
+    event_id: str
+    calendar_id: str
+
+    def validate(self) -> None:
+        if not self.event_id.strip():
+            raise McpContractError("Calendar event_id is required for delete")
+        if not self.calendar_id.strip():
+            raise McpContractError("Calendar calendar_id is required for delete")
+
+
+@dataclass(frozen=True)
 class DocsAppendRequest:
     doc_id: str
     line: str

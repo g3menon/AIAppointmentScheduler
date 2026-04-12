@@ -65,6 +65,13 @@ class GoogleMcpClient:
         )
         return str(event.get("id", ""))
 
+    def delete_calendar_hold(self, event_id: str, calendar_id: str) -> str:
+        self.write_attempts += 1
+        self._calendar.events().delete(
+            calendarId=calendar_id, eventId=event_id, sendUpdates="none"
+        ).execute()
+        return event_id
+
     def append_prebooking_log(self, doc_id: str, line: str, idempotency_key: str) -> str:
         self.write_attempts += 1
         doc = self._docs.documents().get(documentId=doc_id).execute()

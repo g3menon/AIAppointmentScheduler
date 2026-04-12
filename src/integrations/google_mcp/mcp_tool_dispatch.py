@@ -6,6 +6,7 @@ import hashlib
 from typing import Any, Protocol
 
 from src.integrations.google_mcp.backing_services import (
+    CalendarDeleteRequest,
     CalendarHoldRequest,
     DocsAppendRequest,
     GmailDraftRequest,
@@ -20,6 +21,8 @@ class McpOperations(Protocol):
     def create_calendar_hold(
         self, title: str, start_utc: str, end_utc: str, calendar_id: str, idempotency_key: str
     ) -> str: ...
+
+    def delete_calendar_hold(self, event_id: str, calendar_id: str) -> str: ...
 
     def append_prebooking_log(self, doc_id: str, line: str, idempotency_key: str) -> str: ...
 
@@ -57,6 +60,14 @@ def dispatch_mcp_tool(client: McpOperations, name: str, args: dict) -> str | Non
     if cache_key and cache_key in _IDEMPOTENT_RESULTS:
         return _IDEMPOTENT_RESULTS[cache_key]
 
+    if name == "calendar_delete_hold":
+        req = CalendarDeleteRequest(
+            event_id=str(args["event_id"]),
+            calendar_id=str(args["calendar_id"]),
+        )
+        req.validate()
+        result = _with_retry(lambda: client.delete_calendar_hold(req.event_id, req.calendar_id))
+        return result
     if name == "calendar_create_hold":
         req = CalendarHoldRequest(
             title=str(args["title"]),

@@ -13,6 +13,7 @@ class RecordingGoogleMcpClient:
 
     write_attempts: int = 0
     calendar_holds: list[dict] = field(default_factory=list)
+    calendar_deletes: list[dict] = field(default_factory=list)
     doc_appends: list[dict] = field(default_factory=list)
     gmail_drafts: list[dict] = field(default_factory=list)
     settings: GoogleMcpSettings = field(default_factory=load_google_mcp_settings)
@@ -35,6 +36,11 @@ class RecordingGoogleMcpClient:
         }
         self.calendar_holds.append(payload)
         return f"rec_event_{len(self.calendar_holds)}"
+
+    def delete_calendar_hold(self, event_id: str, calendar_id: str) -> str:
+        self.write_attempts += 1
+        self.calendar_deletes.append({"event_id": event_id, "calendar_id": calendar_id})
+        return event_id
 
     def append_prebooking_log(self, doc_id: str, line: str, idempotency_key: str) -> str:
         self.write_attempts += 1

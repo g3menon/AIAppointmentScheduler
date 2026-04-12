@@ -1,25 +1,89 @@
-# Local secrets — never commit
+# -----------------------------------------------------------------------------
+# Local secrets — never commit (real env files only; keep *.example in repo)
+# -----------------------------------------------------------------------------
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.*.example
 
+# -----------------------------------------------------------------------------
 # Python
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
-.pytest_cache/
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
 
+# Type checkers / linters (if added later)
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# -----------------------------------------------------------------------------
+# Testing & coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.tox/
+.nox/
+
+# -----------------------------------------------------------------------------
 # Node (Phase 5 Web UI)
+# -----------------------------------------------------------------------------
 node_modules/
 web/chat-ui/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
+# -----------------------------------------------------------------------------
 # Keys and credentials
+# -----------------------------------------------------------------------------
 *.pem
 *-sa.json
 service-account*.json
 
-# Local OAuth/token helpers (never commit)
+# -----------------------------------------------------------------------------
+# Local OAuth / token helpers (may contain refresh tokens)
+# -----------------------------------------------------------------------------
 get_token.py
 
-# Local scratch files
+# -----------------------------------------------------------------------------
+# Local scratch / duplicate env templates
+# -----------------------------------------------------------------------------
 Untitled
 .env copy.example
+
+# -----------------------------------------------------------------------------
+# OS & editors
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+*.swp
+*.swo
+*~
+
+# VS Code: ignore local state; commit only if you intentionally share settings
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json

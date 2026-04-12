@@ -1,10 +1,16 @@
-fastapi
-fastmcp
-google-api-python-client
-google-auth
-google-auth-oauthlib
-google-generativeai
-pytest
-python-dotenv
-uvicorn[standard]
-
+# Pinned / bounded versions keep `pip install` on fresh venvs from excessive backtracking.
+fastapi>=0.115,<1
+fastmcp>=3.2,<4
+# Phase 7 (Google Cloud STT/TTS adapters)
+google-cloud-speech>=2.30,<3
+google-cloud-texttospeech>=2.30,<3
+google-api-python-client>=2.140,<3
+google-auth>=2.27,<3
+google-auth-oauthlib>=1.2,<2
+google-generativeai>=0.8,<1
+# Align gRPC stack (often source of resolver churn with google-cloud-*)
+grpcio>=1.62,<2
+protobuf>=5.26,<6
+pytest>=8,<10
+python-dotenv>=1.0,<2
+uvicorn[standard]>=0.30,<1

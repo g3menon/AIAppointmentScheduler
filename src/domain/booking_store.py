@@ -19,3 +19,6 @@ class InMemoryBookingStore:
         if record:
             record.status = status
 
+    def delete(self, code: str) -> bool:
+        return self._records.pop(code, None) is not None
+
