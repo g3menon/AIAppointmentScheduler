@@ -12,7 +12,7 @@ from phase1.session.pii_guard import contains_pii
 from phase1.session.session_context import SessionContext
 from phase1.session.state import State
 from phase1.session.topic_catalog import resolve_topic
-from src.domain.booking_code_generator import BookingCodeGenerator
+from src.domain.calendar_service import BookingDomainService, DomainValidationError
 from src.integrations.google_mcp.booking_mcp_executor import BookingMcpBundle, run_booking_mcp_triplet
 from src.integrations.google_mcp.client import GoogleMcpClient
 
@@ -35,9 +35,15 @@ class AgentTurn:
 class Orchestrator:
     """Single text-in/text-out runtime contract: handle(user_text, session) -> AgentTurn."""
 
-    def __init__(self, mcp_client=None, calendar: MockCalendarService | None = None) -> None:
+    def __init__(
+        self,
+        mcp_client=None,
+        calendar: MockCalendarService | None = None,
+        domain_service: BookingDomainService | None = None,
+    ) -> None:
         self.calendar = calendar or MockCalendarService()
         self._mcp = mcp_client
+        self.domain = domain_service or BookingDomainService()
 
     @property
     def mcp(self):
@@ -134,6 +140,19 @@ def _handle_book_topic(orch: Orchestrator, text: str, _lower: str, session: Sess
 def _handle_book_time_preference(orch: Orchestrator, text: str, _lower: str, session: SessionContext) -> AgentTurn:
     session.time_preference = text
     slots = orch.calendar.find_two_slots()
+    if not slots:
+        if session.topic is None:
+            session.state = State.CLOSE
+            return AgentTurn(messages=[T.mcp_booking_failed_message()])
+        decision = orch.domain.create_booking_decision(
+            topic=session.topic,
+            selected_slot=None,
+            time_preference=text,
+        )
+        session.booking_code = decision.command.booking_code
+        session.state = State.CLOSE
+        return AgentTurn(messages=[decision.user_message])
+
     session.offered_slot_choices = slots
     session.offered_slots = [slot.label_ist for slot in slots]
     session.state = State.BOOK_OFFER_SLOTS
@@ -162,27 +181,41 @@ def _handle_book_offer_slots(orch: Orchestrator, _text: str, lower: str, session
 def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> AgentTurn:
     slot = session.selected_timeslot
     topic = session.topic
-    if slot is None or topic is None:
+    if topic is None:
         session.state = State.CLOSE
         return AgentTurn(messages=[T.mcp_booking_failed_message()])
 
-    code = BookingCodeGenerator(exists_fn=lambda _: False).generate()
+    try:
+        decision = orch.domain.create_booking_decision(
+            topic=topic,
+            selected_slot=slot,
+            time_preference=session.time_preference or "unspecified",
+        )
+    except DomainValidationError:
+        session.state = State.CLOSE
+        return AgentTurn(messages=[T.PII_REJECTION])
+
+    command = decision.command
+    code = command.booking_code
     session.booking_code = code
+    if command.action.value == "waitlist":
+        session.state = State.CLOSE
+        return AgentTurn(messages=[decision.user_message])
+    if command.slot is None:
+        session.booking_code = None
+        session.state = State.CLOSE
+        return AgentTurn(messages=[T.mcp_booking_failed_message()])
+
     ns = orch.mcp.settings.idempotency_namespace
     cal_id = orch.mcp.settings.calendar_id
     title = f"Advisor Q&A - {topic} - {code}"
-    log_line = f"{topic} | {slot.label_ist} | {code} | tentative_hold"
-    subject = f"Advisor pre-booking {code}"
-    body = (
-        f"Topic: {topic}\n"
-        f"Slot (IST label): {slot.label_ist}\n"
-        f"Booking code: {code}\n"
-        "This is a draft only — approval required before send.\n"
-    )
+    log_line = command.notes_entry
+    subject = command.email_draft_payload.get("subject", f"Advisor pre-booking {code}")
+    body = command.email_draft_payload.get("body", "")
     bundle = BookingMcpBundle(
         calendar_title=title,
-        start_utc=slot.start_utc,
-        end_utc=slot.end_utc,
+        start_utc=command.slot.start_utc,
+        end_utc=command.slot.end_utc,
         calendar_id=cal_id,
         calendar_idempotency_key=f"{ns}:{code}:calendar",
         doc_id=orch.mcp.settings.prebooking_doc_id,
@@ -228,15 +261,27 @@ def _handle_book_confirm(orch: Orchestrator, _text: str, lower: str, session: Se
 
 
 def _handle_reschedule_collect_code(_orch: Orchestrator, text: str, _lower: str, session: SessionContext) -> AgentTurn:
-    session.pending_booking_code = text.strip().upper()
+    code = text.strip().upper()
+    session.pending_booking_code = code
+    try:
+        _orch.domain.create_reschedule_decision(booking_code=code)
+    except DomainValidationError:
+        session.state = State.RESCHEDULE_COLLECT_CODE
+        return AgentTurn(messages=[T.PII_REJECTION])
     session.state = State.CLOSE
     return AgentTurn(messages=[T.RESCHEDULE_PHASE1_STUB])
 
 
 def _handle_cancel_collect_code(_orch: Orchestrator, text: str, _lower: str, session: SessionContext) -> AgentTurn:
-    session.pending_booking_code = text.strip().upper()
+    code = text.strip().upper()
+    session.pending_booking_code = code
+    try:
+        _orch.domain.create_cancel_decision(booking_code=code)
+    except DomainValidationError:
+        session.state = State.CANCEL_COLLECT_CODE
+        return AgentTurn(messages=[T.PII_REJECTION])
     session.state = State.CANCEL_CONFIRM
-    return AgentTurn(messages=[T.CANCEL_CONFIRM_PROMPT.format(code=text.strip().upper())])
+    return AgentTurn(messages=[T.CANCEL_CONFIRM_PROMPT.format(code=code)])
 
 
 def _handle_cancel_confirm(_orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:

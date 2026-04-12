@@ -11,6 +11,9 @@ class InMemoryBookingStore:
     def get_by_code(self, code: str) -> BookingRecord | None:
         return self._records.get(code)
 
+    def exists(self, code: str) -> bool:
+        return code in self._records
+
     def update_status(self, code: str, status: str) -> None:
         record = self._records.get(code)
         if record:

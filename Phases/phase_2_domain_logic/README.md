@@ -12,8 +12,8 @@
 - `tests/integration/test_orchestrator_to_domain.py`
 
 ## Checklist
-- [ ] Booking code format + collision retry implemented
-- [ ] Domain validates no-PII payloads
-- [ ] Waitlist branch works when no slots
-- [ ] Orchestrator delegates booking decisions to domain
+- [x] Booking code format + collision retry implemented
+- [x] Domain validates no-PII payloads
+- [x] Waitlist branch works when no slots
+- [x] Orchestrator delegates booking decisions to domain
 
