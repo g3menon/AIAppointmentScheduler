@@ -62,7 +62,8 @@ def slot_confirmation_message(slot_label: str) -> str:
 
 def booking_confirmed_message(slot_label: str, booking_code: str, event_id: str, draft_id: str) -> str:
     return (
-        f"Your appointment is confirmed for {slot_label}.\n"
+        f"Your appointment is confirmed.\n"
+        f"Date & time: {slot_label}.\n"
         f"Booking code: {booking_code}.\n"
         "A tentative Google Calendar hold, a pre-booking log line in Google Docs, "
         "and an approval-gated Gmail draft have been created.\n"

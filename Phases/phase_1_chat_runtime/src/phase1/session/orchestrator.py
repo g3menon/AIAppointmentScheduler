@@ -313,6 +313,7 @@ def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> A
         event_id=event_id,
         draft_id=draft_id,
     )
+    orch.calendar.mark_booked(command.slot.start_utc)
 
     session.state = State.CLOSE
     return AgentTurn(
@@ -468,6 +469,8 @@ def _execute_reschedule(orch: Orchestrator, session: SessionContext) -> AgentTur
         return AgentTurn(messages=[build_recovery_plan(exc).fallback_message])
 
     if old_record:
+        if old_record.slot:
+            orch.calendar.release(old_record.slot.start_utc)
         orch.domain.mark_cancelled(old_code)
 
     orch.domain.save_confirmed_booking(
@@ -477,6 +480,7 @@ def _execute_reschedule(orch: Orchestrator, session: SessionContext) -> AgentTur
         event_id=mcp_result.event_id,
         draft_id=mcp_result.draft_id,
     )
+    orch.calendar.mark_booked(new_slot.start_utc)
 
     session.booking_code = new_code
     session.state = State.CLOSE
@@ -542,6 +546,8 @@ def _execute_cancel(orch: Orchestrator, session: SessionContext) -> AgentTurn:
     except Exception:
         pass
 
+    if record and record.slot:
+        orch.calendar.release(record.slot.start_utc)
     orch.domain.mark_cancelled(code)
     session.booking_code = code
     session.state = State.CLOSE

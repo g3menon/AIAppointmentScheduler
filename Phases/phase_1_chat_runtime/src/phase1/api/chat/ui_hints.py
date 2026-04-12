@@ -89,13 +89,19 @@ def build_booking_summary(session: SessionContext, turn: AgentTurn) -> dict | No
         event_id = fx.get("calendar_event_id")
         if not event_id:
             continue
+        slot_label = session.selected_slot or ""
         return {
             "kind": "booking_confirmed",
             "no_further_steps_in_chat": True,
             "detail":
+                f"Appointment: {slot_label}. "
+                "Review your Calendar event, Docs log line, "
+                "and Gmail draft in Google — nothing else is required here."
+                if slot_label else
                 "You are done in this chat. Review your Calendar event, Docs log line, "
                 "and Gmail draft in Google — nothing else is required here.",
             "booking_code": session.booking_code,
+            "slot": slot_label,
             "calendar_event_id": str(event_id),
             "gmail_draft_id": str(fx.get("gmail_draft_id") or ""),
         }

@@ -1,6 +1,9 @@
 import "./style.css";
 
 const API_BASE = import.meta.env.VITE_CHAT_API_URL || "";
+/** Set VITE_USE_WEB_SPEECH=false to disable browser speech recognition on the mic. */
+const USE_WEB_SPEECH = import.meta.env.VITE_USE_WEB_SPEECH !== "false";
+const SPEECH_LANG = import.meta.env.VITE_SPEECH_LANG || "en-IN";
 
 let sessionId = `web-${crypto.randomUUID().slice(0, 8)}`;
 let lastSession = null;
@@ -43,7 +46,7 @@ app.innerHTML = `
           type="button"
           class="voice-btn voice-btn--mic"
           id="btn-mic"
-          title="Hold to preview listening. Phase 6 connects live speech here."
+          title="Hold to speak (browser speech recognition). Release to send."
           aria-pressed="false"
         >
           <span class="voice-icon mic" aria-hidden="true"></span>
@@ -56,7 +59,7 @@ app.innerHTML = `
           <span class="voice-icon speaker" aria-hidden="true"></span>
           <span class="voice-label">Play</span>
         </button>
-        <span class="voice-phase-tag" id="voice-status">Hold mic to preview · STT/TTS in Phase 6</span>
+        <span class="voice-phase-tag" id="voice-status">Hold mic to speak · release to send</span>
       </div>
 
       <div class="composer__row">
@@ -128,6 +131,7 @@ function renderCompletionCard(summary) {
     <h3 class="completion-card__title">Booking complete</h3>
     <p class="completion-card__lead">${escapeHtml(summary.detail)}</p>
     <dl class="completion-card__facts">
+      ${summary.slot ? `<div class="fact"><dt>Date &amp; time</dt><dd>${escapeHtml(summary.slot)}</dd></div>` : ""}
       <div class="fact"><dt>Booking code</dt><dd><code>${escapeHtml(summary.booking_code || "—")}</code></dd></div>
       <div class="fact fact--copy">
         <dt>Calendar event id</dt>
@@ -312,7 +316,7 @@ async function apiPostTracked(text) {
   }
 }
 
-function setVoiceListening(active) {
+function setVoiceListening(active, statusText) {
   if (!voiceBar || !waveformEl || !btnMic || !voiceStatusEl) return;
   voiceBar.classList.toggle("voice-bar--active", active);
   if (active) {
@@ -321,15 +325,35 @@ function setVoiceListening(active) {
     waveformEl.setAttribute("data-voice-idle", "true");
   }
   btnMic.setAttribute("aria-pressed", active ? "true" : "false");
+  if (statusText != null) {
+    voiceStatusEl.textContent = statusText;
+    return;
+  }
   voiceStatusEl.textContent = active
-    ? "Listening… (preview — Phase 6: live STT)"
-    : "Hold mic to preview · STT/TTS in Phase 6";
+    ? "Listening… release when done"
+    : "Hold mic to speak · release to send";
 }
 
-function bindVoiceMicPreview() {
+/** Web Speech API (Chrome/Edge). Sends transcript to the same chat API as typing. */
+function createSpeechRecognition() {
+  const Ctor = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+  if (!Ctor) return null;
+  const r = new Ctor();
+  r.lang = SPEECH_LANG;
+  r.continuous = true;
+  r.interimResults = true;
+  r.maxAlternatives = 1;
+  return r;
+}
+
+let speechRecognition = null;
+let speechFinalChunks = [];
+let speechSessionActive = false;
+
+function bindVoiceMic() {
   if (!btnMic) return;
-  const stop = (e) => {
-    setVoiceListening(false);
+
+  const releaseCapture = (e) => {
     try {
       if (e?.pointerId != null && btnMic.hasPointerCapture(e.pointerId)) {
         btnMic.releasePointerCapture(e.pointerId);
@@ -338,45 +362,170 @@ function bindVoiceMicPreview() {
       /* ignore */
     }
   };
+
+  const stopVisualOnly = (e) => {
+    setVoiceListening(false);
+    releaseCapture(e);
+  };
+
+  const onPointerUp = (e) => {
+    if (!USE_WEB_SPEECH) {
+      stopVisualOnly(e);
+      return;
+    }
+    releaseCapture(e);
+    if (speechRecognition && speechSessionActive) {
+      try {
+        speechRecognition.stop();
+      } catch {
+        /* ignore */
+      }
+    } else {
+      setVoiceListening(false);
+    }
+  };
+
   btnMic.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (inputEl.disabled || sending) return;
     e.preventDefault();
     try {
       btnMic.setPointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-    setVoiceListening(true);
+
+    if (!USE_WEB_SPEECH) {
+      setVoiceListening(false, "Voice input is off (remove VITE_USE_WEB_SPEECH=false to enable)");
+      return;
+    }
+
+    if (!speechRecognition) {
+      speechRecognition = createSpeechRecognition();
+    }
+    if (!speechRecognition) {
+      setVoiceListening(
+        false,
+        "Voice not supported here — use Chrome or Edge, or type your message",
+      );
+      return;
+    }
+
+    speechFinalChunks = [];
+    speechRecognition.onresult = (ev) => {
+      for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+        if (ev.results[i].isFinal) {
+          const t = ev.results[i][0].transcript.trim();
+          if (t) speechFinalChunks.push(t);
+        }
+      }
+    };
+    speechRecognition.onerror = (ev) => {
+      if (ev.error === "aborted") return;
+      const msg =
+        ev.error === "not-allowed"
+          ? "Microphone blocked — allow access in the browser address bar"
+          : `Voice error: ${ev.error}`;
+      setVoiceListening(false, msg);
+      speechSessionActive = false;
+    };
+    speechRecognition.onend = () => {
+      speechSessionActive = false;
+      setVoiceListening(false);
+      const text = speechFinalChunks.join(" ").trim();
+      speechFinalChunks = [];
+      if (text && !sending && !inputEl.disabled) {
+        sendToApi(text, { userBubble: true, userLabel: text, fromVoice: true });
+      }
+    };
+
+    try {
+      speechRecognition.start();
+      speechSessionActive = true;
+      setVoiceListening(true, "Listening… release when done");
+    } catch {
+      setVoiceListening(false, "Could not start microphone — try again");
+      speechSessionActive = false;
+    }
   });
-  btnMic.addEventListener("pointerup", stop);
-  btnMic.addEventListener("pointercancel", stop);
-  btnMic.addEventListener("lostpointercapture", () => setVoiceListening(false));
+
+  btnMic.addEventListener("pointerup", onPointerUp);
+  btnMic.addEventListener("pointercancel", onPointerUp);
+  btnMic.addEventListener("lostpointercapture", () => {
+    if (!speechSessionActive) setVoiceListening(false);
+  });
 }
 
-bindVoiceMicPreview();
+bindVoiceMic();
 
 /** Phase 6: call `window.__advisorVoice?.setListening(true)` while STT is active. */
 if (typeof window !== "undefined") {
   window.__advisorVoice = { setListening: setVoiceListening };
 }
 
-function appendAssistantStagger(messages) {
+let lastInputWasVoice = false;
+const btnSpeaker = document.getElementById("btn-speaker");
+
+function speakText(text) {
+  if (!("speechSynthesis" in window)) return;
+  const cleaned = text
+    .replace(/\n/g, ". ")
+    .replace(/https?:\/\/\S+/g, "link")
+    .replace(/[_*`]/g, "");
+  const utt = new SpeechSynthesisUtterance(cleaned);
+  utt.lang = SPEECH_LANG;
+  utt.rate = 1.0;
+  window.speechSynthesis.speak(utt);
+}
+
+function speakMessages(messages) {
+  if (!messages || !messages.length) return;
+  if (!("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  messages.forEach((text) => speakText(text));
+}
+
+function stopSpeaking() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+if (btnSpeaker) {
+  btnSpeaker.disabled = false;
+  btnSpeaker.title = "Tap to replay last response aloud";
+  let lastSpoken = [];
+  const origAppend = null;
+  btnSpeaker.addEventListener("click", () => {
+    if (lastSpoken.length) speakMessages(lastSpoken);
+  });
+  window.__advisorVoice.setLastSpoken = (msgs) => { lastSpoken = msgs || []; };
+}
+
+function appendAssistantStagger(messages, speakAloud = false) {
   (messages || []).forEach((text, i) => {
     window.setTimeout(() => addBubble(text, "assistant", i), i * 70);
   });
+  if (speakAloud && messages?.length) {
+    const delay = Math.max(0, (messages.length - 1) * 70 + 50);
+    window.setTimeout(() => speakMessages(messages), delay);
+  }
+  if (window.__advisorVoice?.setLastSpoken) {
+    window.__advisorVoice.setLastSpoken(messages);
+  }
 }
 
-async function sendToApi(text, { userBubble = true, userLabel } = {}) {
+async function sendToApi(text, { userBubble = true, userLabel, fromVoice = false } = {}) {
   if (sending) return;
   sending = true;
   sendBtn.disabled = true;
+  const shouldSpeak = fromVoice || lastInputWasVoice;
+  lastInputWasVoice = fromVoice;
   try {
     if (userBubble) {
       addBubble(userLabel || text, "user", 0);
     }
     const data = await apiPostTracked(text);
     applyChrome(data);
-    appendAssistantStagger(data.messages);
+    appendAssistantStagger(data.messages, shouldSpeak);
     scheduleCompletionIfNeeded(data);
   } catch {
     addBubble("Could not reach the server. Is the API running on port 8000?", "system", 0);
@@ -389,6 +538,7 @@ async function sendToApi(text, { userBubble = true, userLabel } = {}) {
 
 async function onQuickReply(item) {
   if (item.action === "new_session") {
+    stopSpeaking();
     resetChat();
     return;
   }
