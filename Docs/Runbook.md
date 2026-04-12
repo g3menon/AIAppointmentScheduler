@@ -10,7 +10,7 @@
 |--------------------|-------|--------------------------------------------------------------|
 | Backend API        | 8000  | `uvicorn src.api.http.chat_app:app --host 127.0.0.1 --port 8000` |
 | Vite Chat UI       | 5173  | `cd web/chat-ui && npm run dev`                              |
-| Streamlit UI       | 8501  | `streamlit run streamlit_app.py`                             |
+| Streamlit UI       | 8501  | `streamlit run Phases/phase_9_streamlit_deploy/streamlit_app.py` (or root `streamlit_app.py` shim) |
 
 **Health check:** `GET http://127.0.0.1:8000/api/health` → `{"status": "ok"}`
 

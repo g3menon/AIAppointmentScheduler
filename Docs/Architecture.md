@@ -252,7 +252,8 @@ Deploy a Streamlit frontend that uses the same backend chat API contracts and pr
 
 ### 9.2 Required code/config additions for deployability
 1. **Create Streamlit app entry**
-   - Add `streamlit_app.py` at repo root (or `apps/streamlit_app.py`)
+   - Canonical app: `Phases/phase_9_streamlit_deploy/streamlit_app.py` (and `src/phase9/` client + UI modules).
+   - Optional root shim: `streamlit_app.py` at repo root delegates to the same `phase9.app.main()`.
    - responsibilities:
      - session bootstrap
      - render chat timeline
@@ -283,7 +284,7 @@ Deploy a Streamlit frontend that uses the same backend chat API contracts and pr
 
 6. **Health and deployment scripts**
    - add deployment docs section and startup commands:
-     - local: `streamlit run streamlit_app.py`
+     - local: `streamlit run Phases/phase_9_streamlit_deploy/streamlit_app.py` or `streamlit run streamlit_app.py` (root shim)
      - hosted: platform start command for Streamlit app
    - optionally add a lightweight `/health` check on API if not already available
 
@@ -314,14 +315,15 @@ Deploy a Streamlit frontend that uses the same backend chat API contracts and pr
 - `src/integrations/google_mcp/` - MCP integration path
 - `src/observability/` - logging/audit/reliability
 - `web/chat-ui/` - Vite web client
-- `streamlit_app.py` (Phase 9) - Streamlit deployment UI entry
+- `Phases/phase_9_streamlit_deploy/` - Streamlit deployment UI (entry + `phase9` client)
+- `streamlit_app.py` (repo root) - thin shim to Phase 9 entry
 
 ---
 
 ## 7) Local/Deploy Runbook Summary
 - API local: `uvicorn src.api.http.chat_app:app --host 127.0.0.1 --port 8000`
 - Vite UI local: `cd web/chat-ui && npm run dev`
-- Streamlit local (Phase 9): `streamlit run streamlit_app.py`
+- Streamlit local (Phase 9): `streamlit run Phases/phase_9_streamlit_deploy/streamlit_app.py` (or `streamlit run streamlit_app.py`)
 
 ---
-*Last updated: 2026-04-12*
+*Last updated: 2026-04-13*
