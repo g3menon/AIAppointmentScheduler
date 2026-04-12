@@ -16,3 +16,10 @@ web/chat-ui/dist/
 *.pem
 *-sa.json
 service-account*.json
+
+# Local OAuth/token helpers (never commit)
+get_token.py
+
+# Local scratch files
+Untitled
+.env copy.example

@@ -13,8 +13,8 @@
 - `tests/integration/test_domain_to_mcp.py`
 
 ## Checklist
-- [ ] Structured NLU output schema enforced
-- [ ] FastMCP tools exposed for Calendar/Docs/Gmail
-- [ ] Fake MCP integrations used by CI
-- [ ] Idempotency and retry behavior covered by tests
+- [x] Structured NLU output schema enforced
+- [x] FastMCP tools exposed for Calendar/Docs/Gmail
+- [x] Fake MCP integrations used by CI
+- [x] Idempotency and retry behavior covered by tests
 

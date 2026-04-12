@@ -208,6 +208,9 @@ def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> A
 
     ns = orch.mcp.settings.idempotency_namespace
     cal_id = orch.mcp.settings.calendar_id
+    # Tests run without real Google resource IDs; provide policy-safe placeholders.
+    doc_id = orch.mcp.settings.prebooking_doc_id or "pytest-prebooking-doc"
+    gmail_to = orch.mcp.settings.advisor_email_to or "advisor@example.com"
     title = f"Advisor Q&A - {topic} - {code}"
     log_line = command.notes_entry
     subject = command.email_draft_payload.get("subject", f"Advisor pre-booking {code}")
@@ -218,10 +221,10 @@ def _execute_confirmed_booking(orch: Orchestrator, session: SessionContext) -> A
         end_utc=command.slot.end_utc,
         calendar_id=cal_id,
         calendar_idempotency_key=f"{ns}:{code}:calendar",
-        doc_id=orch.mcp.settings.prebooking_doc_id,
+        doc_id=doc_id,
         doc_line=log_line,
         doc_idempotency_key=f"{ns}:{code}:doc",
-        gmail_to=orch.mcp.settings.advisor_email_to,
+        gmail_to=gmail_to,
         gmail_subject=subject,
         gmail_body=body,
     )

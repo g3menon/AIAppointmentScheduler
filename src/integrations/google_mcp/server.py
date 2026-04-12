@@ -17,6 +17,11 @@ def _get_client() -> GoogleMcpClient:
     return _client
 
 
+def set_client_for_tests(client: GoogleMcpClient | None) -> None:
+    global _client
+    _client = client
+
+
 @mcp.tool()
 def calendar_create_hold(
     title: str,
@@ -39,14 +44,6 @@ def calendar_create_hold(
         )
         or ""
     )
-
-
-@mcp.tool()
-def calendar_delete_hold(event_id: str, calendar_id: str) -> None:
-    client = _get_client()
-    client.write_attempts += 1
-    client._calendar.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-    return None
 
 
 @mcp.tool()
