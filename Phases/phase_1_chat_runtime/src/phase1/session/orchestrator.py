@@ -26,6 +26,11 @@ from src.integrations.google_mcp.booking_mcp_executor import (
 )
 from src.integrations.google_mcp.client import GoogleMcpClient
 from src.integrations.google_mcp.mcp_tool_dispatch import dispatch_mcp_tool
+from phase8.runtime_controls import (
+    TurnLimitExceeded,
+    guard_request_size,
+    guard_turn_limit,
+)
 from src.observability.audit import record_artifact_status
 from src.observability.logger import log_event
 from src.session.orchestrator import build_recovery_plan
@@ -70,6 +75,22 @@ class Orchestrator:
         text = (user_text or "").strip()
         lower = text.lower()
         session.turn_count += 1
+
+        try:
+            guard_request_size(text)
+        except Exception:
+            return AgentTurn(messages=[
+                "Your message is too long. Please shorten it and try again."
+            ])
+
+        try:
+            guard_turn_limit(session.turn_count)
+        except TurnLimitExceeded:
+            session.state = State.CLOSE
+            return AgentTurn(messages=[
+                "This session has reached its turn limit. "
+                "Please start a new session to continue."
+            ])
 
         error_type = "none"
         if contains_pii(text):

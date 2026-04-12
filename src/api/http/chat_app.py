@@ -15,8 +15,9 @@ _PHASE1_SRC = _ROOT / "Phases" / "phase_1_chat_runtime" / "src"
 _PHASE3_SRC = _ROOT / "Phases" / "phase_3_nlu_and_mcp" / "src"
 _PHASE4_SRC = _ROOT / "Phases" / "phase_4_reliability_observability" / "src"
 _PHASE5_SRC = _ROOT / "Phases" / "phase_5_waitlist_and_advice_policy" / "src"
+_PHASE8_SRC = _ROOT / "Phases" / "phase_8_hardening_ops" / "src"
 
-for _p in (_ROOT, _PHASE1_SRC, _PHASE3_SRC, _PHASE4_SRC, _PHASE5_SRC):
+for _p in (_ROOT, _PHASE1_SRC, _PHASE3_SRC, _PHASE4_SRC, _PHASE5_SRC, _PHASE8_SRC):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)

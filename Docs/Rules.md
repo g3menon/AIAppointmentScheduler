@@ -30,7 +30,7 @@ This document enforces how phases must be implemented against `Docs/Architecture
 | P1.2 | Implement orchestrator state machine. | Required stages: greet, disclaimer, capture, offer, confirm, complete. |
 | P1.3 | Support all 5 intents in chat mode. | book, reschedule, cancel, what to prepare, availability. |
 | P1.4 | Enforce topic whitelist and no-PII prompts. | Unsupported topics and sensitive user inputs are handled safely. |
-| P1.5 | Offer exactly two mock slots in IST. | Slot *options* are deterministic mock data; the **selected** slot is persisted to Google Calendar as a tentative hold after confirmation. |
+| P1.5 | Offer exactly two mock slots in IST. | Slot *options* are generated as future IST-labeled mock data relative to runtime date; the **selected** slot is persisted to Google Calendar as a tentative hold after confirmation. |
 | P1.6 | Use real Google MCP for operational artifacts. | After explicit user confirmation, invoke **real** Calendar hold, Docs append, and Gmail **draft** (never auto-send) via `GoogleMcpClient` / FastMCP tools — not in-process fake Google services. |
 
 ### Definition of Done (Phase 1)
@@ -106,7 +106,7 @@ This document enforces how phases must be implemented against `Docs/Architecture
 | P5.2 | Node is presentation + dev ergonomics. | `web/chat-ui/` uses Vite (or similar) for fast iteration; UI calls documented REST endpoints. |
 | P5.3 | No secrets in the browser. | API keys, Google credentials, and service tokens stay server-side; front-end only sends `session_id` and user text. |
 | P5.4 | CORS and localhost defaults. | Permit local dev origins explicitly; production deployments use HTTPS and tightened origin lists. |
-| P5.5 | Reserve voice affordances. | Layout or routing allows adding mic/TTS controls in Phase 6 without rewriting the text chat flow. |
+| P5.5 | Reserve voice affordances. | Layout or routing allows adding mic/TTS controls in Phase 7 without rewriting the text chat flow. |
 
 ### Definition of Done (Phase 5)
 - A developer can run the Python chat API and `npm run dev` and complete the full text booking journey in the browser.
@@ -115,42 +115,43 @@ This document enforces how phases must be implemented against `Docs/Architecture
 
 ---
 
-## 7) Phase 6 Rules - Voice Adapters (Chat <-> Voice Bridge) + Web UI Entry
+## 7) Phase 6 Rules - Secondary Intent Subgraphs (Chat-First Completion)
 
 ### Rules
 | # | Rule | Implementation expectation |
 |---|------|----------------------------|
-| P6.1 | Voice must reuse chat runtime. | STT output becomes `user_text` for `Orchestrator.handle`; assistant lines feed TTS. |
-| P6.2 | No logic duplication in voice layer. | Voice modules cannot implement domain/integration decisions. |
-| P6.3 | Enforce behavior parity. | Same scenario in text Web UI and voice yields same domain commands/artifacts. |
-| P6.4 | Preserve compliance in voice. | Disclaimer/refusal/no-PII behavior must match chat path; barge-in cannot skip policy gates. |
-| P6.5 | Spoken outputs are concise and clear. | Booking code and IST time use `tts_formatter` (or equivalent); scripts do not elicit PII. |
-| P6.6 | Voice is reachable from Phase 5 UI. | After STT/TTS exist, users enable voice from the **same** `web/chat-ui/` app (toggle/tab/route). |
-| P6.7 | Transcript hygiene. | STT partial/final text passes the same `PiiGuard` / redaction path as typed chat. |
-| P6.8 | Chat remains regression baseline. | Pytest chat suites stay mandatory and green after voice integration. |
+| P6.1 | Implement full reschedule graph. | Collect booking code, validate, offer two alternatives, update hold/artifacts safely. |
+| P6.2 | Implement full cancel graph. | Collect booking code, confirm, cancel hold, append cancellation note. |
+| P6.3 | Implement deterministic prepare guidance. | `what_to_prepare` replies come from approved deterministic templates. |
+| P6.4 | Implement availability peek safely. | Availability checks remain informational-only unless user enters booking path. |
+| P6.5 | Preserve booking-code-only identity flow. | Reschedule/cancel lookup must use booking code only (no alternate identity capture). |
+| P6.6 | Preserve compliance and idempotency. | Disclaimer/refusal/no-PII and no-duplicate side effects remain enforced. |
 
 ### Definition of Done (Phase 6)
-- Voice path is functional through the chat runtime bridge with parity versus text UI.
-- Voice controls are integrated into the Web UI delivered in Phase 5.
-- No raw audio/transcript persistence by default in production; demo artifacts are reproducible.
+- Secondary-intent subgraphs are complete and tested end-to-end in chat mode.
+- Booking-code-only identity works for reschedule/cancel.
+- Secondary intents do not introduce PII capture/persistence.
 
 ---
 
-## 8) Phase 7 Rules - Secondary Intent Subgraphs (Chat-First Completion)
+## 8) Phase 7 Rules - Voice Adapters (Chat <-> Voice Bridge) + Web UI Entry
 
 ### Rules
 | # | Rule | Implementation expectation |
 |---|------|----------------------------|
-| P7.1 | Implement full reschedule graph. | Collect booking code, validate, offer two alternatives, update hold. |
-| P7.2 | Implement full cancel graph. | Collect code, confirm, cancel hold, append cancellation note, optional draft update. |
-| P7.3 | Implement deterministic prepare guidance. | `what_to_prepare` responses come from approved static templates, not free-form invention. |
-| P7.4 | Implement availability peek safely. | Availability checks do not create booking artifacts unless user confirms booking path. |
-| P7.5 | Preserve no-PII invariants in all subgraphs. | Reschedule/cancel must never request/store personal identifiers; booking code is the only lookup token. |
+| P7.1 | Voice must reuse chat runtime. | STT output becomes `user_text` for `Orchestrator.handle`; assistant lines feed TTS. |
+| P7.2 | No logic duplication in voice layer. | Voice modules cannot implement domain/integration decisions. |
+| P7.3 | Enforce behavior parity. | Same scenario in text Web UI and voice yields same domain commands/artifacts. |
+| P7.4 | Preserve compliance in voice. | Disclaimer/refusal/no-PII behavior must match chat path; barge-in cannot skip policy gates. |
+| P7.5 | Spoken outputs are concise and clear. | Booking code and IST time use `tts_formatter` (or equivalent); scripts do not elicit PII. |
+| P7.6 | Voice is reachable from Phase 5 UI. | Users enable voice from the same `web/chat-ui/` app (mic toggle + playback). |
+| P7.7 | Transcript hygiene. | STT text passes the same PII guard/redaction path as typed chat. |
+| P7.8 | Voice UX baseline. | In voice mode: assistant responses must be text + speech, and user speech can interrupt TTS. |
 
 ### Definition of Done (Phase 7)
-- All secondary intent subgraphs are tested end-to-end in **text Web UI** (and voice where applicable).
-- Booking-code-only identity flow works for reschedule/cancel.
-- No subgraph introduces PII capture or persistence.
+- Voice path is functional through the chat runtime bridge with parity versus text UI.
+- Voice controls are integrated into the Web UI delivered in Phase 5.
+- No raw audio/transcript persistence by default in production; demo artifacts are reproducible.
 
 ---
 
@@ -181,8 +182,8 @@ This document enforces how phases must be implemented against `Docs/Architecture
 | Phase 3 | MCP payload validator blocks PII in Calendar/Docs/Gmail payloads before send. |
 | Phase 4 | Logging/audit redaction is enforced before persistence/export. |
 | Phase 5 | Web UI does not store raw transcripts in browser persistence by default; never ship secrets to the client; HTTPS in non-local deployments. |
-| Phase 6 | STT/TTS path uses same PII gate as chat; scripts/TTS avoid eliciting or repeating PII; no raw audio retention by default. |
-| Phase 7 | Reschedule/cancel use booking code only; no alternate identity capture. |
+| Phase 6 | Reschedule/cancel use booking code only; no alternate identity capture. |
+| Phase 7 | STT/TTS path uses same PII gate as chat; scripts/TTS avoid eliciting or repeating PII; no raw audio retention by default. |
 | Phase 8 | CI/runtime audits verify no PII in logs, traces, artifacts, and test fixtures. |
 
 ---
@@ -195,7 +196,8 @@ This document enforces how phases must be implemented against `Docs/Architecture
 - **E2E tests:**
   - Phases 1-4: chat-only journeys (pytest).
   - Phase 5: optional browser or HTTP smoke against API + Node UI.
-  - Phase 6 onward: include voice journeys, parity checks, and Web UI voice mode where applicable.
+  - Phase 6 onward: include secondary-intent depth checks.
+  - Phase 7 onward: include voice journeys, parity checks, and Web UI voice mode where applicable.
 
 ### 11.2 Quality Gates for Phase Completion
 - New/changed unit tests pass.
@@ -211,13 +213,13 @@ This document enforces how phases must be implemented against `Docs/Architecture
 - what-to-prepare
 - investment-advice refusal
 - MCP transient failure and retry/idempotency behavior
-- chat-vs-voice parity (Phase 6 onward)
+- chat-vs-voice parity (Phase 7 onward)
 
 ### 11.4 Recommended CI Sequence
 1. Lint + static checks
 2. Unit tests
 3. Integration tests
-4. E2E smoke tests (chat-only for Phases 1-4; optional Web UI smoke in Phase 5; chat+voice from Phase 6)
+4. E2E smoke tests (chat-only for Phases 1-4; optional Web UI smoke in Phase 5; expanded secondary-intent depth in Phase 6; chat+voice from Phase 7)
 5. MCP contract validation tests (Calendar/Docs/Gmail)
 
 ---
@@ -227,7 +229,7 @@ This document enforces how phases must be implemented against `Docs/Architecture
 | # | Rule | Enforcement |
 |---|------|-------------|
 | E1 | No phase skipping. | A phase cannot be marked complete unless all DoD checks pass. |
-| E2 | No premature voice work. | Voice adapters (**Phase 6**) cannot start before Phase 1-4 and **Phase 5 Web UI** quality gates are green (text path proven in browser + HTTP API). |
+| E2 | No premature voice work. | Voice adapters (**Phase 7**) cannot start before Phase 1-6 and **Phase 5 Web UI** quality gates are green (text path proven in browser + HTTP API). |
 | E3 | No backward leakage. | Later-phase logic must not appear in earlier phases. |
 | E4 | Interface freeze before integrations. | Contracts across orchestration/domain/MCP must be stable before production wiring. |
 | E5 | Docs and implementation must stay aligned. | Architecture/rules updates are required when behavior changes. |
@@ -245,4 +247,4 @@ Before closing any phase:
 
 ---
 
-*Last updated: 2026-04-11*
+*Last updated: 2026-04-12*
