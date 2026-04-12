@@ -21,8 +21,14 @@ _TOPIC_ALIASES: dict[str, Topic] = {
 
 
 def is_topic_allowed(topic: str) -> bool:
-    return topic.strip().lower() in _TOPIC_ALIASES
+    return _normalize_topic_input(topic) in _TOPIC_ALIASES
 
 
 def resolve_topic(topic: str) -> Topic | None:
-    return _TOPIC_ALIASES.get(topic.strip().lower())
+    return _TOPIC_ALIASES.get(_normalize_topic_input(topic))
+
+
+def _normalize_topic_input(topic: str) -> str:
+    normalized = " ".join(topic.strip().lower().split())
+    normalized = normalized.replace(" / ", "/").replace("/ ", "/").replace(" /", "/")
+    return normalized

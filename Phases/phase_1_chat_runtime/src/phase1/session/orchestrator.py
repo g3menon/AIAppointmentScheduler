@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -100,9 +101,9 @@ class Orchestrator:
 
     @staticmethod
     def _parse_slot_choice(text: str) -> int | None:
-        if "1" in text:
+        if re.fullmatch(r"\s*(?:option\s*)?1\s*\)?\s*", text):
             return 0
-        if "2" in text:
+        if re.fullmatch(r"\s*(?:option\s*)?2\s*\)?\s*", text):
             return 1
         return None
 
@@ -200,7 +201,14 @@ def _handle_book_time_preference(orch: Orchestrator, text: str, _lower: str, ses
 
 
 def _handle_book_offer_slots(orch: Orchestrator, _text: str, lower: str, session: SessionContext) -> AgentTurn:
-    selection = orch._parse_slot_choice(lower)
+    normalized = _text.strip().lower()
+    selection = None
+    for idx, offered in enumerate(session.offered_slots):
+        if normalized == offered.lower():
+            selection = idx
+            break
+    if selection is None:
+        selection = orch._parse_slot_choice(lower)
     if selection is None:
         return AgentTurn(messages=[T.SLOT_INVALID_CHOICE])
 

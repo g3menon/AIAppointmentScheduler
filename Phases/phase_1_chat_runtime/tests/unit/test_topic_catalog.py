@@ -59,5 +59,9 @@ def test_resolve_sip_alias() -> None:
     assert resolve_topic("mandates") == Topic.SIP_MANDATES
 
 
+def test_resolve_topic_with_spaced_slash() -> None:
+    assert resolve_topic("KYC / Onboarding") == Topic.KYC_ONBOARDING
+
+
 def test_resolve_unsupported_returns_none() -> None:
     assert resolve_topic("crypto") is None

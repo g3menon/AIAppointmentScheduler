@@ -1,58 +1,470 @@
-const apiBase = import.meta.env.VITE_CHAT_API_URL || "";
+import "./style.css";
+
+const API_BASE = import.meta.env.VITE_CHAT_API_URL || "";
+
+let sessionId = `web-${crypto.randomUUID().slice(0, 8)}`;
+let lastSession = null;
+let sending = false;
 
 const app = document.getElementById("app");
+
 app.innerHTML = `
-  <main style="max-width:42rem;margin:1.5rem auto;font-family:system-ui,sans-serif;">
-    <h1 style="font-size:1.25rem;">Advisor pre-booking (text)</h1>
-    <p style="color:#444;font-size:0.9rem;">Phase 5 UI — same runtime as pytest. Voice controls land here in Phase 6.</p>
-    <div id="thread" style="border:1px solid #ddd;border-radius:8px;padding:1rem;min-height:12rem;background:#fafafa;white-space:pre-wrap;"></div>
-    <form id="f" style="margin-top:0.75rem;display:flex;gap:0.5rem;">
-      <input id="text" type="text" autocomplete="off" placeholder="Type a message…" style="flex:1;padding:0.5rem 0.65rem;" />
-      <button type="submit">Send</button>
-    </form>
-    <p id="state" style="margin-top:0.5rem;font-size:0.8rem;color:#666;"></p>
+  <header class="app-header">
+    <div class="app-header__brand">
+      <span class="app-header__dot" aria-hidden="true"></span>
+      <div>
+        <h1 class="app-header__title">Advisor assistant</h1>
+        <p class="app-header__subtitle">Informational scheduling · not investment advice</p>
+      </div>
+    </div>
+    <div class="app-header__meta">
+      <span class="session-pill" id="session-pill" title="Session id"></span>
+      <button type="button" class="btn-ghost btn-new" id="btn-new-chat" title="Start fresh">New chat</button>
+    </div>
+  </header>
+
+  <main class="chat-main">
+    <div class="chat-messages" id="messages" aria-live="polite"></div>
+
+    <section class="starter-panel" id="starter-panel" hidden>
+      <div class="starter-panel__head">
+        <span class="starter-panel__kicker">Get started</span>
+        <h2 class="starter-panel__title">What would you like to do?</h2>
+        <p class="starter-panel__hint">Tap a button below — if the disclaimer is still pending, we acknowledge it for you automatically.</p>
+      </div>
+      <div class="chip-grid" id="intent-preview"></div>
+    </section>
+
+    <div class="quick-replies" id="quick-replies" hidden></div>
+
+    <div class="composer">
+      <div class="voice-bar" id="voice-bar" aria-label="Voice controls">
+        <button
+          type="button"
+          class="voice-btn voice-btn--mic"
+          id="btn-mic"
+          title="Hold to preview listening. Phase 6 connects live speech here."
+          aria-pressed="false"
+        >
+          <span class="voice-icon mic" aria-hidden="true"></span>
+          <span class="voice-label">Mic</span>
+        </button>
+        <div class="waveform" id="waveform" aria-hidden="true" data-voice-idle="true">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <button type="button" class="voice-btn" id="btn-speaker" disabled title="Playback after Phase 6 TTS">
+          <span class="voice-icon speaker" aria-hidden="true"></span>
+          <span class="voice-label">Play</span>
+        </button>
+        <span class="voice-phase-tag" id="voice-status">Hold mic to preview · STT/TTS in Phase 6</span>
+      </div>
+
+      <div class="composer__row">
+        <input
+          id="input"
+          type="text"
+          placeholder="Or type a message…"
+          autocomplete="off"
+          maxlength="16000"
+        />
+        <button type="button" class="btn-send" id="send">Send</button>
+      </div>
+    </div>
   </main>
 `;
 
-const thread = document.getElementById("thread");
-const stateEl = document.getElementById("state");
-const form = document.getElementById("f");
-const input = document.getElementById("text");
+const messagesEl = document.getElementById("messages");
+const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+const quickRepliesEl = document.getElementById("quick-replies");
+const starterPanel = document.getElementById("starter-panel");
+const intentPreviewEl = document.getElementById("intent-preview");
+const sessionPill = document.getElementById("session-pill");
+const btnNewChat = document.getElementById("btn-new-chat");
+const voiceBar = document.getElementById("voice-bar");
+const btnMic = document.getElementById("btn-mic");
+const waveformEl = document.getElementById("waveform");
+const voiceStatusEl = document.getElementById("voice-status");
 
-const sessionId = `web-${Math.random().toString(36).slice(2, 10)}`;
+let processingIndicatorEl = null;
 
-function append(role, text) {
-  const prefix = role === "user" ? "You: " : "Assistant:\n";
-  thread.textContent += (thread.textContent ? "\n\n" : "") + prefix + text;
-  thread.scrollTop = thread.scrollHeight;
+function updateSessionPill() {
+  sessionPill.textContent = sessionId;
 }
 
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = input.value.trim();
-  if (!text) return;
-  append("user", text);
-  input.value = "";
+function scrollToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
 
-  const url = apiBase ? `${apiBase.replace(/\/$/, "")}/api/chat/message` : "/api/chat/message";
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, text }),
+function addBubble(text, role, index = 0) {
+  const wrap = document.createElement("div");
+  wrap.className = `bubble-wrap bubble-wrap--${role}`;
+  wrap.style.setProperty("--stagger", String(index));
+
+  const div = document.createElement("div");
+  div.className = `bubble bubble--${role}`;
+  div.textContent = text;
+
+  wrap.appendChild(div);
+  messagesEl.appendChild(wrap);
+  requestAnimationFrame(() => {
+    wrap.classList.add("bubble-wrap--in");
+    scrollToBottom();
+  });
+}
+
+function removeCompletionCards() {
+  messagesEl.querySelectorAll(".completion-card").forEach((el) => el.remove());
+}
+
+function renderCompletionCard(summary) {
+  removeCompletionCards();
+  const wrap = document.createElement("div");
+  wrap.className = "bubble-wrap bubble-wrap--completion";
+  const card = document.createElement("article");
+  card.className = "completion-card";
+  card.innerHTML = `
+    <div class="completion-card__icon" aria-hidden="true">✓</div>
+    <h3 class="completion-card__title">Booking complete</h3>
+    <p class="completion-card__lead">${escapeHtml(summary.detail)}</p>
+    <dl class="completion-card__facts">
+      <div class="fact"><dt>Booking code</dt><dd><code>${escapeHtml(summary.booking_code || "—")}</code></dd></div>
+      <div class="fact fact--copy">
+        <dt>Calendar event id</dt>
+        <dd>
+          <code id="copy-eid">${escapeHtml(summary.calendar_event_id)}</code>
+          <button type="button" class="btn-copy" data-copy-target="copy-eid">Copy</button>
+        </dd>
+      </div>
+      ${
+        summary.gmail_draft_id
+          ? `<div class="fact fact--copy"><dt>Gmail draft id</dt><dd><code id="copy-did">${escapeHtml(
+              summary.gmail_draft_id,
+            )}</code><button type="button" class="btn-copy" data-copy-target="copy-did">Copy</button></dd></div>`
+          : ""
+      }
+    </dl>
+    <p class="completion-card__foot">No further steps are required in this chat.</p>
+  `;
+  wrap.appendChild(card);
+  messagesEl.appendChild(wrap);
+  requestAnimationFrame(() => {
+    wrap.classList.add("bubble-wrap--in");
+    scrollToBottom();
+  });
+
+  card.querySelectorAll(".btn-copy").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-copy-target");
+      const node = document.getElementById(id);
+      const text = node ? node.textContent.trim() : "";
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = "Copied";
+        setTimeout(() => {
+          btn.textContent = "Copy";
+        }, 1600);
+      } catch {
+        btn.textContent = "Copy failed";
+        setTimeout(() => {
+          btn.textContent = "Copy";
+        }, 1600);
+      }
     });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(err || res.statusText);
-    }
-    const data = await res.json();
-    stateEl.textContent = `state: ${data.state}`;
-    for (const m of data.messages || []) {
-      append("assistant", m);
-    }
-  } catch (err) {
-    append("assistant", `[Error] ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function clearQuickReplies() {
+  quickRepliesEl.innerHTML = "";
+  quickRepliesEl.hidden = true;
+}
+
+function renderQuickReplies(items) {
+  clearQuickReplies();
+  if (!items || items.length === 0) return;
+  quickRepliesEl.hidden = false;
+  const label = document.createElement("span");
+  label.className = "quick-replies__label";
+  label.textContent = "Next step — tap a button";
+  quickRepliesEl.appendChild(label);
+  const row = document.createElement("div");
+  row.className = "quick-replies__row";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Suggested replies");
+  items.forEach((item) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-next-step";
+    b.textContent = item.label;
+    b.addEventListener("click", () => onQuickReply(item));
+    row.appendChild(b);
+  });
+  quickRepliesEl.appendChild(row);
+}
+
+function renderIntentPreview(items) {
+  intentPreviewEl.innerHTML = "";
+  if (!items || items.length === 0) {
+    starterPanel.hidden = true;
+    return;
   }
+  starterPanel.hidden = false;
+  intentPreviewEl.setAttribute("role", "group");
+  intentPreviewEl.setAttribute("aria-label", "Choose an action");
+  items.forEach((item) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-next-step btn-next-step--primary";
+    b.textContent = item.label;
+    b.addEventListener("click", () => onIntentPreview(item));
+    intentPreviewEl.appendChild(b);
+  });
+}
+
+function applyChrome(data) {
+  lastSession = data.session || null;
+
+  const showPreview =
+    Array.isArray(data.intent_preview) &&
+    data.intent_preview.length > 0 &&
+    lastSession &&
+    !lastSession.disclaimer_acknowledged;
+  if (showPreview) {
+    renderIntentPreview(data.intent_preview);
+  } else {
+    starterPanel.hidden = true;
+    intentPreviewEl.innerHTML = "";
+  }
+
+  renderQuickReplies(data.quick_replies || []);
+
+  inputEl.disabled = Boolean(lastSession && lastSession.state === "CLOSE");
+  sendBtn.disabled = inputEl.disabled;
+}
+
+function scheduleCompletionIfNeeded(data) {
+  removeCompletionCards();
+  if (!data.booking_summary || data.booking_summary.kind !== "booking_confirmed") {
+    return;
+  }
+  const n = data.messages?.length || 0;
+  const delay = Math.max(0, (n - 1) * 70 + 120);
+  window.setTimeout(() => renderCompletionCard(data.booking_summary), delay);
+}
+
+async function apiPost(text) {
+  const res = await fetch(`${API_BASE}/api/chat/message`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, text }),
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+function showProcessingIndicator() {
+  if (processingIndicatorEl) return;
+  const wrap = document.createElement("div");
+  wrap.className = "bubble-wrap bubble-wrap--assistant bubble-wrap--processing";
+  wrap.id = "processing-indicator";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble bubble--assistant bubble--processing";
+  bubble.setAttribute("role", "status");
+  bubble.setAttribute("aria-live", "polite");
+  bubble.innerHTML =
+    '<span class="processing-text">Working on your request</span><span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>';
+  wrap.appendChild(bubble);
+  messagesEl.appendChild(wrap);
+  requestAnimationFrame(() => {
+    wrap.classList.add("bubble-wrap--in");
+    scrollToBottom();
+  });
+  processingIndicatorEl = wrap;
+}
+
+function hideProcessingIndicator() {
+  if (!processingIndicatorEl) return;
+  processingIndicatorEl.remove();
+  processingIndicatorEl = null;
+}
+
+async function apiPostTracked(text) {
+  let slowShown = false;
+  const tid = window.setTimeout(() => {
+    showProcessingIndicator();
+    slowShown = true;
+  }, 1000);
+  try {
+    return await apiPost(text);
+  } finally {
+    window.clearTimeout(tid);
+    if (slowShown) hideProcessingIndicator();
+  }
+}
+
+function setVoiceListening(active) {
+  if (!voiceBar || !waveformEl || !btnMic || !voiceStatusEl) return;
+  voiceBar.classList.toggle("voice-bar--active", active);
+  if (active) {
+    waveformEl.removeAttribute("data-voice-idle");
+  } else {
+    waveformEl.setAttribute("data-voice-idle", "true");
+  }
+  btnMic.setAttribute("aria-pressed", active ? "true" : "false");
+  voiceStatusEl.textContent = active
+    ? "Listening… (preview — Phase 6: live STT)"
+    : "Hold mic to preview · STT/TTS in Phase 6";
+}
+
+function bindVoiceMicPreview() {
+  if (!btnMic) return;
+  const stop = (e) => {
+    setVoiceListening(false);
+    try {
+      if (e?.pointerId != null && btnMic.hasPointerCapture(e.pointerId)) {
+        btnMic.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+  btnMic.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.preventDefault();
+    try {
+      btnMic.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    setVoiceListening(true);
+  });
+  btnMic.addEventListener("pointerup", stop);
+  btnMic.addEventListener("pointercancel", stop);
+  btnMic.addEventListener("lostpointercapture", () => setVoiceListening(false));
+}
+
+bindVoiceMicPreview();
+
+/** Phase 6: call `window.__advisorVoice?.setListening(true)` while STT is active. */
+if (typeof window !== "undefined") {
+  window.__advisorVoice = { setListening: setVoiceListening };
+}
+
+function appendAssistantStagger(messages) {
+  (messages || []).forEach((text, i) => {
+    window.setTimeout(() => addBubble(text, "assistant", i), i * 70);
+  });
+}
+
+async function sendToApi(text, { userBubble = true, userLabel } = {}) {
+  if (sending) return;
+  sending = true;
+  sendBtn.disabled = true;
+  try {
+    if (userBubble) {
+      addBubble(userLabel || text, "user", 0);
+    }
+    const data = await apiPostTracked(text);
+    applyChrome(data);
+    appendAssistantStagger(data.messages);
+    scheduleCompletionIfNeeded(data);
+  } catch {
+    addBubble("Could not reach the server. Is the API running on port 8000?", "system", 0);
+  } finally {
+    sending = false;
+    if (!inputEl.disabled) sendBtn.disabled = false;
+    if (!inputEl.disabled) inputEl.focus();
+  }
+}
+
+async function onQuickReply(item) {
+  if (item.action === "new_session") {
+    resetChat();
+    return;
+  }
+  await sendToApi(item.value, { userBubble: true, userLabel: item.label });
+}
+
+async function onIntentPreview(item) {
+  if (sending) return;
+  if (lastSession && !lastSession.disclaimer_acknowledged) {
+    sending = true;
+    sendBtn.disabled = true;
+    try {
+      const ack = await apiPostTracked("ok");
+      applyChrome(ack);
+      appendAssistantStagger(ack.messages);
+      scheduleCompletionIfNeeded(ack);
+      await new Promise((r) => setTimeout(r, (ack.messages?.length || 0) * 70 + 40));
+      const data = await apiPostTracked(item.value);
+      addBubble(item.label, "user", 0);
+      applyChrome(data);
+      appendAssistantStagger(data.messages);
+      scheduleCompletionIfNeeded(data);
+    } catch {
+      addBubble("Could not reach the server.", "system", 0);
+    } finally {
+      sending = false;
+      sendBtn.disabled = inputEl.disabled;
+      if (!inputEl.disabled) inputEl.focus();
+    }
+    return;
+  }
+  await sendToApi(item.value, { userBubble: true, userLabel: item.label });
+}
+
+async function bootstrap() {
+  updateSessionPill();
+  sending = true;
+  sendBtn.disabled = true;
+  try {
+    const data = await apiPostTracked("hello");
+    applyChrome(data);
+    appendAssistantStagger(data.messages);
+    scheduleCompletionIfNeeded(data);
+  } catch {
+    addBubble("Could not reach the server. Start the API: uvicorn src.api.http.chat_app:app --port 8000", "system", 0);
+  } finally {
+    sending = false;
+    sendBtn.disabled = inputEl.disabled;
+    inputEl.focus();
+  }
+}
+
+function resetChat() {
+  sessionId = `web-${crypto.randomUUID().slice(0, 8)}`;
+  lastSession = null;
+  messagesEl.innerHTML = "";
+  clearQuickReplies();
+  starterPanel.hidden = true;
+  intentPreviewEl.innerHTML = "";
+  inputEl.disabled = false;
+  sendBtn.disabled = false;
+  updateSessionPill();
+  bootstrap();
+}
+
+sendBtn.addEventListener("click", () => {
+  const text = inputEl.value.trim();
+  if (!text || sending || inputEl.disabled) return;
+  inputEl.value = "";
+  sendToApi(text, { userBubble: true });
 });
 
-append("assistant", "Send “hello” to start. (Ensure the Python API is running on port 8000 or set VITE_CHAT_API_URL.)");
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendBtn.click();
+});
+
+btnNewChat.addEventListener("click", resetChat);
+
+bootstrap();
