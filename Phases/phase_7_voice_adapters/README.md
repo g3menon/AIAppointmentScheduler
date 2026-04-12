@@ -1,18 +1,23 @@
-# Phase 7 - Voice Adapters
+# Phase 7 — Voice Adapters (STT / TTS over Chat Runtime)
 
-## Required implementation files
-- `src/integrations/voice/stt.py`
-- `src/integrations/voice/tts.py`
-- `src/api/voice/routes.py`
-- `src/session/orchestrator.py` (unchanged contract only)
+Boundary-only adapters that convert audio ↔ text without touching
+orchestration, domain, or MCP logic.
 
-## Required tests
-- `tests/integration/test_voice_pipeline.py`
-- `tests/integration/test_chat_voice_parity.py`
+## Architecture
 
-## Checklist
-- [ ] STT final utterance maps to same chat runtime call
-- [ ] TTS reads each assistant message in order
-- [ ] Barge-in does not bypass policy checks
-- [ ] Raw audio/transcript persistence stays disabled by default
+```
+Audio In ──► STT Adapter ──► Orchestrator.handle(text, session) ──► TTS Formatter ──► TTS Adapter ──► Audio Out
+```
 
+- **`config.py`** — loads voice feature flags and Google Cloud STT/TTS settings from `.env`.
+- **`stt_adapter.py`** — Google Cloud Speech-to-Text; returns normalised text.
+- **`tts_adapter.py`** — Google Cloud Text-to-Speech; returns audio bytes.
+- **`tts_formatter.py`** — spoken-clarity transforms (booking codes, IST dates).
+- **`chat_voice_bridge.py`** — glues STT → orchestrator → TTS in one call.
+
+## Running tests
+
+```bash
+# from repo root
+python -m pytest Phases/phase_7_voice_adapters/tests -q
+```
